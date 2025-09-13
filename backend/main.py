@@ -44,7 +44,8 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Global state
-hardware_websocket: Optional[websockets.WebSocketCommonProtocol] = None
+hardware_websocket_out: Optional[websockets.WebSocketCommonProtocol] = None
+hardware_websocket_in: Optional[websockets.WebSocketCommonProtocol] = None
 frontend_clients: List[WebSocket] = []
 optimizer = MicrogridOptimizer(epoch_len=1/24, horizon=10)
 telemetry_buffer = deque(maxlen=1000)  # Store last 1000 readings
@@ -97,8 +98,11 @@ def create_metrics_table() -> Table:
         output_hz = 1.0 / avg_interval if avg_interval > 0 else 0.0
     
     # ESP32 Connection
-    esp32_status = "🟢 Connected" if hardware_websocket else "🔴 Disconnected"
-    table.add_row("ESP32 Connection", esp32_status, "")
+    out_status = "✓" if hardware_websocket_out else "✗"
+    in_status = "✓" if hardware_websocket_in else "✗"
+    esp32_status = f"Out:{out_status} In:{in_status}"
+    overall_color = "green" if hardware_websocket_out and hardware_websocket_in else "yellow" if hardware_websocket_out or hardware_websocket_in else "red"
+    table.add_row("ESP32 Connection", esp32_status, f"[{overall_color}]/out and /in endpoints[/{overall_color}]")
     
     # Input Frequency (ESP32 → Backend)
     input_color = "green" if input_hz > 20 else "yellow" if input_hz > 10 else "red"
@@ -150,72 +154,99 @@ def create_metrics_table() -> Table:
     
     return table
 
-async def connect_to_esp32():
-    """Connect to ESP32 hardware via WebSocket and handle telemetry stream."""
-    global hardware_websocket
-    
-    # Get ESP32 IP from key-value store
+async def get_esp32_ip():
+    """Get ESP32 IP from key-value store."""
     import httpx
     try:
-        async with httpx.AsyncClient(verify=False) as client:  # Disable SSL verification for dev
+        async with httpx.AsyncClient(verify=False) as client:
             response = await client.get('https://kv.wfeng.dev/hackmit25:ip', timeout=5.0)
             esp_ip = response.text.strip()
             logger.info(f"ESP32 IP: {esp_ip}")
+            return esp_ip
     except Exception as e:
         logger.error(f"Failed to get ESP32 IP: {e}")
-        esp_ip = "192.168.1.100"  # fallback
-    
+        return "192.168.1.100"  # fallback
+
+async def connect_to_esp32_out():
+    """Connect to ESP32 /out endpoint for telemetry data."""
+    global hardware_websocket_out
+
     while True:
         try:
-            uri = f"ws://{esp_ip}/ws"
-            logger.info(f"Connecting to ESP32 at {uri}")
-            
-            # ESP32 requires proper WebSocket client masking and headers
-            headers = {
-                "User-Agent": "Griddy-Backend/1.0",
-                "Sec-WebSocket-Protocol": "binary"
-            }
+            esp_ip = await get_esp32_ip()
+            uri = f"ws://{esp_ip}/out"
+            logger.info(f"Connecting to ESP32 /out at {uri}")
+
             async with websockets.connect(
                 uri,
-                extra_headers=headers,
-                ping_interval=None,  # Disable ping/pong to reduce overhead
-                ping_timeout=None,
-                close_timeout=1.0,
-                max_size=2**16,  # 64KB max message size
-                compression=None  # Disable compression for speed
+                ping_interval=20,
+                ping_timeout=10,
+                close_timeout=5.0,
+                max_size=2**20,
+                compression=None,
+                subprotocols=["binary"],
+                origin="http://griddy-backend"
             ) as websocket:
-                hardware_websocket = websocket
-                logger.info("Connected to ESP32 hardware")
-                
+                hardware_websocket_out = websocket
+                logger.info("Connected to ESP32 /out for telemetry")
+
                 async for message in websocket:
                     try:
-                        # Handle both binary and JSON for backward compatibility
                         if isinstance(message, bytes):
-                            # Binary protocol
-                            logger.info(f"Received binary message: {len(message)} bytes")
+                            logger.debug(f"Received binary telemetry: {len(message)} bytes")
                             packet = BinaryProtocol.decode_telemetry(message)
                             if packet:
-                                logger.info(f"Successfully parsed binary telemetry: {len(packet.nodes)} nodes")
-                                # Convert to JSON-compatible format for existing processing
+                                logger.debug(f"Successfully parsed binary telemetry: {len(packet.nodes)} nodes")
                                 data = BinaryProtocol.telemetry_to_json_compat(packet)
                                 await process_hardware_telemetry(data)
                             else:
                                 logger.warning(f"Failed to parse binary telemetry: {len(message)} bytes")
-                                # Log first 20 bytes for debugging
                                 logger.warning(f"First 20 bytes: {message[:20].hex()}")
                         else:
-                            # Legacy JSON protocol
-                            data = json.loads(message)
-                            await process_hardware_telemetry(data)
-                    except json.JSONDecodeError:
-                        logger.warning(f"Invalid JSON from ESP32: {message}")
+                            logger.error(f"Received text message on /out - binary protocol only: {message}")
                     except Exception as e:
-                        logger.error(f"Error processing telemetry: {e}")
-                        
+                        logger.error(f"Error processing telemetry from /out: {e}")
+
         except Exception as e:
-            logger.error(f"ESP32 connection failed: {e}")
-            hardware_websocket = None
-            await asyncio.sleep(5)  # Retry after 5 seconds
+            logger.error(f"ESP32 /out connection failed: {e}")
+            hardware_websocket_out = None
+            await asyncio.sleep(5)
+
+async def connect_to_esp32_in():
+    """Connect to ESP32 /in endpoint for sending dispatch commands."""
+    global hardware_websocket_in
+
+    while True:
+        try:
+            esp_ip = await get_esp32_ip()
+            uri = f"ws://{esp_ip}/in"
+            logger.info(f"Connecting to ESP32 /in at {uri}")
+
+            async with websockets.connect(
+                uri,
+                ping_interval=20,
+                ping_timeout=10,
+                close_timeout=5.0,
+                max_size=2**20,
+                compression=None,
+                subprotocols=["binary"],
+                origin="http://griddy-backend"
+            ) as websocket:
+                hardware_websocket_in = websocket
+                logger.info("Connected to ESP32 /in for dispatch commands")
+
+                # Keep connection alive, but don't expect messages back
+                try:
+                    async for message in websocket:
+                        # /in endpoint shouldn't send us data, but handle it gracefully
+                        logger.debug(f"Unexpected message from /in endpoint: {message}")
+                except websockets.exceptions.ConnectionClosed:
+                    logger.info("ESP32 /in connection closed")
+
+        except Exception as e:
+            logger.error(f"ESP32 /in connection failed: {e}")
+            hardware_websocket_in = None
+            await asyncio.sleep(5)
 
 async def process_hardware_telemetry(data: Dict[str, Any]):
     """Process incoming telemetry from ESP32 and run optimization."""
@@ -330,12 +361,13 @@ def calculate_confidence_score(records: List[DemandRecord], dispatch: List[Dict]
     return min(1.0, max(0.0, confidence))
 
 async def send_dispatch_to_hardware(dispatch_instructions: List[Dict[str, Any]]):
-    """Send optimization results back to ESP32 hardware."""
-    global hardware_websocket
-    
-    if not hardware_websocket:
+    """Send optimization results back to ESP32 hardware via /in endpoint."""
+    global hardware_websocket_in
+
+    if not hardware_websocket_in:
+        logger.debug("No /in connection available for dispatch")
         return
-    
+
     try:
         # Convert to binary dispatch format
         dispatch_nodes = []
@@ -345,19 +377,19 @@ async def send_dispatch_to_hardware(dispatch_instructions: List[Dict[str, Any]])
                 supply=float(d["supply_amps"]) / 5.0,  # Normalize to 0-1 for PWM
                 source=1  # Source ID (simplified)
             ))
-        
+
         dispatch_packet = DispatchPacket(nodes=dispatch_nodes)
         binary_data = BinaryProtocol.encode_dispatch(dispatch_packet)
-        
-        await hardware_websocket.send(binary_data)
-        
+
+        await hardware_websocket_in.send(binary_data)
+
         # Track output frequency
         dispatch_timestamps.append(time.time())
-        
-        logger.debug(f"Sent binary dispatch to ESP32: {len(dispatch_nodes)} commands ({len(binary_data)} bytes)")
-        
+
+        logger.debug(f"Sent binary dispatch to ESP32 /in: {len(dispatch_nodes)} commands ({len(binary_data)} bytes)")
+
     except Exception as e:
-        logger.error(f"Failed to send dispatch to hardware: {e}")
+        logger.error(f"Failed to send dispatch to hardware /in: {e}")
 
 async def broadcast_to_frontend(metrics: Dict[str, Any]):
     """Broadcast metrics to all connected frontend clients."""
@@ -397,17 +429,19 @@ async def update_live_table():
 async def lifespan(app: FastAPI):
     """Startup and shutdown events."""
     # Start background tasks
-    esp32_task = asyncio.create_task(connect_to_esp32())
+    esp32_out_task = asyncio.create_task(connect_to_esp32_out())
+    esp32_in_task = asyncio.create_task(connect_to_esp32_in())
     table_task = asyncio.create_task(update_live_table())
-    
+
     console.print("\n🚀 [bold green]Griddy Backend Starting[/bold green]")
-    console.print("📡 Connecting to ESP32 hardware...")
+    console.print("📡 Connecting to ESP32 hardware (/out and /in)...")
     console.print("📊 Live metrics table initializing...\n")
-    
+
     yield
-    
+
     # Cleanup
-    esp32_task.cancel()
+    esp32_out_task.cancel()
+    esp32_in_task.cancel()
     table_task.cancel()
     console.print("\n🛑 [bold red]Griddy backend shutting down[/bold red]")
 
@@ -432,7 +466,8 @@ async def root():
     """Health check endpoint."""
     return {
         "status": "active",
-        "hardware_connected": hardware_websocket is not None,
+        "hardware_out_connected": hardware_websocket_out is not None,
+        "hardware_in_connected": hardware_websocket_in is not None,
         "frontend_clients": len(frontend_clients),
         "telemetry_buffer_size": len(telemetry_buffer),
         "latest_confidence": confidence_scores[-1] if confidence_scores else None
