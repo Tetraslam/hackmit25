@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include <math.h>
@@ -14,12 +15,20 @@
 #include "nvs_flash.h"
 #include "esp_netif.h"
 #include "protocol_examples_common.h"
+#include "driver/ledc.h"
 #include "cJSON.h"
 
 #define POWER_GRID_TAG "power_grid"
 #define DATA_SEND_INTERVAL_MS 42  // 24 Hz = ~41.67ms
 #define MAX_NODES 8
 #define MAX_JSON_BUFFER 2048
+
+#define LEDC_MODE LEDC_LOW_SPEED_MODE
+#define LEDC_DUTY_RES LEDC_TIMER_13_BIT
+#define LEDC_FREQUENCY 1000
+#define MAX_DUTY (1 << LEDC_DUTY_RES) - 1
+
+#define NUM_OUTPUT_PINS 3
 
 typedef struct {
     int id;
@@ -34,12 +43,68 @@ typedef struct {
     int node_count;
 } power_grid_data_t;
 
+typedef struct {
+    int node_id;
+    int gpio_pin;
+    ledc_channel_t channel;
+} output_pin_map_t;
+
+static const output_pin_map_t output_pins[NUM_OUTPUT_PINS] = {
+    {14, 14, LEDC_CHANNEL_0},
+    {27, 27, LEDC_CHANNEL_1},
+    {26, 26, LEDC_CHANNEL_2}
+};
+
 static httpd_handle_t server_handle = NULL;
 static int ws_fd = -1;
 static TaskHandle_t data_task = NULL;
 static volatile bool should_send_data = false;
 static power_grid_data_t grid_data;
 static char json_buffer[MAX_JSON_BUFFER];
+
+static void init_pwm_outputs(void)
+{
+    ledc_timer_config_t timer_config = {
+        .speed_mode = LEDC_MODE,
+        .duty_resolution = LEDC_DUTY_RES,
+        .timer_num = LEDC_TIMER_0,
+        .freq_hz = LEDC_FREQUENCY,
+        .clk_cfg = LEDC_AUTO_CLK
+    };
+    ESP_ERROR_CHECK(ledc_timer_config(&timer_config));
+
+    for (int i = 0; i < NUM_OUTPUT_PINS; i++) {
+        ledc_channel_config_t channel_config = {
+            .speed_mode = LEDC_MODE,
+            .channel = output_pins[i].channel,
+            .timer_sel = LEDC_TIMER_0,
+            .intr_type = LEDC_INTR_DISABLE,
+            .gpio_num = output_pins[i].gpio_pin,
+            .duty = 0,
+            .hpoint = 0
+        };
+        ESP_ERROR_CHECK(ledc_channel_config(&channel_config));
+    }
+
+    ESP_LOGI(POWER_GRID_TAG, "PWM outputs initialized on pins 14, 27, 26");
+}
+
+static void set_output_pwm(int node_id, float supply)
+{
+    if (supply < 0.0f) supply = 0.0f;
+    if (supply > 1.0f) supply = 1.0f;
+
+    for (int i = 0; i < NUM_OUTPUT_PINS; i++) {
+        if (output_pins[i].node_id == node_id) {
+            uint32_t duty = (uint32_t)(supply * MAX_DUTY);
+            ledc_set_duty(LEDC_MODE, output_pins[i].channel, duty);
+            ledc_update_duty(LEDC_MODE, output_pins[i].channel);
+            ESP_LOGI(POWER_GRID_TAG, "Set node %d (pin %d) to %.3f%% duty",
+                     node_id, output_pins[i].gpio_pin, supply * 100.0f);
+            break;
+        }
+    }
+}
 
 static void init_dummy_nodes(void)
 {
@@ -63,20 +128,29 @@ static void update_dummy_data(void)
     for (int i = 0; i < grid_data.node_count; i++) {
         power_node_t *node = &grid_data.nodes[i];
 
-        if (strcmp(node->type, "consumer") == 0) {
-            float base_demand = (i == 2) ? 2.5 : (i == 3) ? 1.8 : 3.2;
-            float variation = 0.3 * sinf(0.1 * time_s + i * 1.5);
-            node->demand = base_demand + variation;
-            if (node->demand < 0.1) node->demand = 0.1;
+        float phase_offset = i * 0.5f; // Different phase for each node
 
-            node->fulfillment = 0.85 + 0.1 * sinf(0.05 * time_s + i * 0.8);
-            if (node->fulfillment > 1.0) node->fulfillment = 1.0;
-            if (node->fulfillment < 0.7) node->fulfillment = 0.7;
+        if (strcmp(node->type, "consumer") == 0) {
+            // Demand varies sinusoidally between 0.5 and 4.0
+            float base_demand = 2.25f; // midpoint
+            float demand_amplitude = 1.75f; // amplitude
+            float demand_freq = 0.08f; // frequency in Hz
+            node->demand = base_demand + demand_amplitude * sinf(2.0f * M_PI * demand_freq * time_s + phase_offset);
+
+            // Fulfillment varies between 0.7 and 1.0
+            float base_ff = 0.85f;
+            float ff_amplitude = 0.15f;
+            float ff_freq = 0.12f;
+            node->fulfillment = base_ff + ff_amplitude * sinf(2.0f * M_PI * ff_freq * time_s + phase_offset + 1.0f);
         } else {
+            // Power generators have zero demand
             node->demand = 0.0;
-            node->fulfillment = 0.85 + 0.1 * sinf(0.03 * time_s + i * 2.1);
-            if (node->fulfillment > 1.0) node->fulfillment = 1.0;
-            if (node->fulfillment < 0.8) node->fulfillment = 0.8;
+
+            // Generator fulfillment varies between 0.8 and 1.0
+            float base_ff = 0.9f;
+            float ff_amplitude = 0.1f;
+            float ff_freq = 0.06f;
+            node->fulfillment = base_ff + ff_amplitude * sinf(2.0f * M_PI * ff_freq * time_s + phase_offset + 2.0f);
         }
     }
 }
@@ -94,10 +168,14 @@ static int generate_json_data(char *buffer, size_t buffer_size)
         power_node_t *node = &grid_data.nodes[i];
         cJSON *node_obj = cJSON_CreateObject();
 
+        char demand_str[16], ff_str[16];
+        snprintf(demand_str, sizeof(demand_str), "%.4f", node->demand);
+        snprintf(ff_str, sizeof(ff_str), "%.4f", node->fulfillment);
+
         cJSON_AddItemToObject(node_obj, "id", cJSON_CreateNumber(node->id));
         cJSON_AddItemToObject(node_obj, "type", cJSON_CreateString(node->type));
-        cJSON_AddItemToObject(node_obj, "demand", cJSON_CreateNumber(roundf(node->demand * 10000) / 10000));
-        cJSON_AddItemToObject(node_obj, "ff", cJSON_CreateNumber(roundf(node->fulfillment * 10000) / 10000));
+        cJSON_AddItemToObject(node_obj, "demand", cJSON_CreateNumber(atof(demand_str)));
+        cJSON_AddItemToObject(node_obj, "ff", cJSON_CreateNumber(atof(ff_str)));
 
         cJSON_AddItemToArray(nodes_array, node_obj);
     }
@@ -179,11 +257,46 @@ static esp_err_t power_grid_ws_handler(httpd_req_t *req)
         if (buf) {
             ws_pkt.payload = buf;
             ret = httpd_ws_recv_frame(req, &ws_pkt, ws_pkt.len);
-            if (ret == ESP_OK && ws_pkt.type == HTTPD_WS_TYPE_CLOSE) {
-                ESP_LOGI(POWER_GRID_TAG, "WebSocket connection closed by client");
-                ws_fd = -1;
-                should_send_data = false;
+
+            if (ret == ESP_OK) {
+                if (ws_pkt.type == HTTPD_WS_TYPE_CLOSE) {
+                    ESP_LOGI(POWER_GRID_TAG, "WebSocket connection closed by client");
+                    ws_fd = -1;
+                    should_send_data = false;
+                } else if (ws_pkt.type == HTTPD_WS_TYPE_TEXT) {
+                    buf[ws_pkt.len] = '\0';
+
+                    cJSON *json = cJSON_Parse((char *)buf);
+                    if (json) {
+                        cJSON *nodes = cJSON_GetObjectItem(json, "nodes");
+                        if (cJSON_IsArray(nodes)) {
+                            int array_size = cJSON_GetArraySize(nodes);
+                            for (int i = 0; i < array_size; i++) {
+                                cJSON *node = cJSON_GetArrayItem(nodes, i);
+                                if (node) {
+                                    cJSON *id = cJSON_GetObjectItem(node, "id");
+                                    cJSON *supply = cJSON_GetObjectItem(node, "supply");
+                                    cJSON *source = cJSON_GetObjectItem(node, "source");
+
+                                    if (cJSON_IsNumber(id) && cJSON_IsNumber(supply) && cJSON_IsNumber(source)) {
+                                        int node_id = (int)cJSON_GetNumberValue(id);
+                                        float supply_val = (float)cJSON_GetNumberValue(supply);
+                                        int source_id = (int)cJSON_GetNumberValue(source);
+
+                                        ESP_LOGI(POWER_GRID_TAG, "Received: node %d gets %.3f supply from source %d",
+                                                node_id, supply_val, source_id);
+                                        set_output_pwm(node_id, supply_val);
+                                    }
+                                }
+                            }
+                        }
+                        cJSON_Delete(json);
+                    } else {
+                        ESP_LOGW(POWER_GRID_TAG, "Invalid JSON received");
+                    }
+                }
             }
+
             free(buf);
         }
     }
@@ -238,6 +351,8 @@ static httpd_handle_t start_webserver(void)
 void app_main(void)
 {
     ESP_LOGI(POWER_GRID_TAG, "Starting Power Grid Node");
+
+    init_pwm_outputs();
 
     ESP_ERROR_CHECK(nvs_flash_init());
     ESP_ERROR_CHECK(esp_netif_init());

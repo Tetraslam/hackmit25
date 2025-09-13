@@ -14,10 +14,15 @@ async def test_power_grid():
     async with websockets.connect(uri) as websocket:
         print("Connected")
 
-        while True:
-            message = await websocket.recv()
-            data = json.loads(message)
-            print(f"Timestamp: {data['timestamp']}, Nodes: {len(data['nodes'])}")
+        # Wait for websocket data
+        data = await websocket.recv()
+        print("Received data:", data)
+
+        # Send control command
+        control_msg = json.dumps({"nodes": [{"id": 27, "supply": 1.0, "source": 1}]})
+        await websocket.send(control_msg)
+        print("Sent control command")
 
 if __name__ == "__main__":
     asyncio.run(test_power_grid())
+    
