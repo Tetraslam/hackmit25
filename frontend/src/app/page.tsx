@@ -17,82 +17,13 @@ import {
   TrendingUp, Shield, Globe, Lightbulb,
   Play, Pause, RotateCcw, Power
 } from "lucide-react";
-import { animate, stagger } from "animejs";
 import { ExplodedDiagram } from "@/components/exploded-diagram";
 
 export default function Home() {
   const heroRef = useRef<HTMLDivElement>(null);
-  const diagramRef = useRef<HTMLDivElement>(null);
   const statsRef = useRef<HTMLDivElement>(null);
-  const [exploded, setExploded] = useState(false);
   const [activeTab, setActiveTab] = useState("overview");
 
-  useEffect(() => {
-    // Hero section animation (sequenced via delays)
-    animate('.hero-badge', { opacity: [0, 1], translateY: [20, 0] }, { duration: 800, ease: 'outExpo' })
-    animate('.hero-title', { opacity: [0, 1], translateY: [30, 0] }, { duration: 1000, ease: 'outExpo', delay: 200 })
-    animate('.hero-subtitle', { opacity: [0, 1], translateY: [20, 0] }, { duration: 800, ease: 'outExpo', delay: 400 })
-    animate('.hero-buttons', { opacity: [0, 1], translateY: [20, 0] }, { duration: 600, ease: 'outExpo', delay: 600 })
-
-    // Trigger exploded animation after hero
-    setTimeout(() => setExploded(true), 1500);
-  }, []);
-
-  useEffect(() => {
-    if (!exploded) return;
-
-    // Exploded diagram animation - REAL exploded view
-    animate('.diagram-esp32', { 
-      translateX: exploded ? [-200, -120] : [0, 0], 
-      translateY: exploded ? [0, -40] : [0, 0],
-      rotate: exploded ? ['0deg', '-15deg'] : ['0deg', '0deg'],
-      scale: exploded ? [1, 1.1] : [1, 1],
-      opacity: [0, 1] 
-    }, { duration: 1200, ease: 'outElastic(1, .8)' });
-
-    animate('.diagram-transmission-1', { 
-      translateX: exploded ? [0, -60] : [0, 0],
-      translateY: exploded ? [0, -20] : [0, 0],
-      opacity: [0, 1] 
-    }, { duration: 800, ease: 'outQuart', delay: 200 });
-
-    animate('.diagram-transmission-2', { 
-      translateX: exploded ? [0, 60] : [0, 0],
-      translateY: exploded ? [0, 20] : [0, 0],
-      opacity: [0, 1] 
-    }, { duration: 800, ease: 'outQuart', delay: 400 });
-
-    animate('.diagram-consumer', { 
-      translateX: exploded ? [0, 120] : [0, 0],
-      translateY: exploded ? (el, i) => [0, -60 + (i * 40)] : [0, 0],
-      rotate: exploded ? (el, i) => ['0deg', `${(i - 1) * 10}deg`] : ['0deg', '0deg'],
-      scale: exploded ? [1, 1.05] : [1, 1],
-      opacity: [0, 1] 
-    }, { duration: 1000, ease: 'outElastic(1, .6)', delay: stagger(150, { start: 600 }) });
-
-    animate('.diagram-battery', { 
-      translateX: exploded ? [0, -40] : [0, 0],
-      translateY: exploded ? [0, 80] : [0, 0],
-      rotate: exploded ? ['0deg', '10deg'] : ['0deg', '0deg'],
-      scale: exploded ? [1, 1.15] : [1, 1],
-      opacity: [0, 1] 
-    }, { duration: 1000, ease: 'outBounce', delay: 800 });
-
-    animate('.diagram-cerebras', { 
-      translateX: exploded ? [0, 40] : [0, 0],
-      translateY: exploded ? [0, -120] : [0, 0],
-      rotate: exploded ? ['0deg', '-5deg'] : ['0deg', '0deg'],
-      scale: exploded ? [1, 1.2] : [1, 1],
-      opacity: [0, 1] 
-    }, { duration: 800, ease: 'outBack(1.7)', delay: 1000 });
-
-    // Connection lines animation
-    animate('.connection-line', { 
-      strokeDashoffset: [1000, 0],
-      opacity: [0, 0.6]
-    }, { duration: 2000, ease: 'outQuart', delay: 1200 });
-
-  }, [exploded]);
 
   // Stats counter animation with intersection observer
   useEffect(() => {
@@ -147,27 +78,27 @@ export default function Home() {
         <div className="absolute inset-0 bg-gradient-to-br from-background via-muted/20 to-background" />
         <div className="absolute inset-0 bg-[radial-gradient(ellipse_80%_80%_at_50%_-20%,hsl(var(--primary)/0.1),transparent)]" />
         
-        <div className="container mx-auto px-4 text-center z-10">
-          <div className="hero-badge opacity-0 mb-6">
+        <div className="container mx-auto px-4 text-left z-10 max-w-4xl">
+          <div className="hero-badge animate-in fade-in slide-in-from-bottom-4 duration-800 mb-6">
             <Badge variant="secondary" className="text-sm px-4 py-2">
               HackMIT 2025 · Sustainability Track
             </Badge>
           </div>
           
-          <h1 className="hero-title opacity-0 text-6xl md:text-8xl font-bold tracking-tight mb-6 bg-gradient-to-r from-foreground via-primary to-foreground bg-clip-text text-transparent">
-            TerraGrid
+          <h1 className="hero-title animate-in fade-in slide-in-from-bottom-6 duration-1000 delay-200 text-6xl md:text-8xl font-bold tracking-tight mb-6 bg-gradient-to-r from-foreground via-primary to-foreground bg-clip-text text-transparent">
+            Griddy
           </h1>
           
-          <p className="hero-subtitle opacity-0 text-xl md:text-2xl text-muted-foreground mb-8 max-w-4xl mx-auto leading-relaxed">
-            Agent-assisted microgrid routing with real hardware-in-the-loop.
+          <p className="hero-subtitle animate-in fade-in slide-in-from-bottom-4 duration-800 delay-400 text-xl md:text-2xl text-muted-foreground mb-8 max-w-4xl mx-auto leading-relaxed">
+            ESP32 microgrid optimization with MILP algorithms and Cerebras AI.
             <br />
-            <span className="text-primary font-semibold">Making fossil generation economically unviable.</span>
+            <span className="text-primary font-semibold">Hardware-in-the-loop power dispatch at 24Hz.</span>
           </p>
           
-          <div className="hero-buttons opacity-0 flex flex-col sm:flex-row gap-4 justify-center items-center">
+          <div className="hero-buttons animate-in fade-in slide-in-from-bottom-4 duration-600 delay-600 flex flex-col sm:flex-row gap-4 items-start">
             <Button asChild size="lg" className="text-lg px-8 py-6">
               <Link href="/metrics">
-                View Live Metrics <ArrowRight className="ml-2" size={20} />
+                View Dashboard <ArrowRight className="ml-2" size={20} />
               </Link>
             </Button>
             <Button variant="outline" size="lg" className="text-lg px-8 py-6" asChild>
@@ -189,21 +120,9 @@ export default function Home() {
       </section>
 
       {/* Interactive Exploded Diagram Section */}
-      <section id="exploded-section" ref={diagramRef} className="py-20 bg-muted/5">
+      <section id="exploded-section" className="py-20 bg-muted/5">
         <div className="container mx-auto px-4">
-          <div className="text-center mb-12">
-            <h2 className="text-5xl font-bold mb-6">System Exploded View</h2>
-            <p className="text-xl text-muted-foreground mb-8">Real hardware simulation with intelligent routing</p>
-            
-            <Alert className="max-w-2xl mx-auto mb-8">
-              <ChevronDown className="h-4 w-4" />
-              <AlertTitle>Scroll-Triggered Explosion</AlertTitle>
-              <AlertDescription>
-                Scroll down past this section to see components explode apart in 3D space. 
-                Scroll back up to reassemble. Drag to rotate, scroll wheel to zoom.
-              </AlertDescription>
-            </Alert>
-          </div>
+          
           
           {/* EPIC 3D EXPLODED DIAGRAM */}
           <ExplodedDiagram />
@@ -214,8 +133,11 @@ export default function Home() {
       <section className="py-20">
         <div className="container mx-auto px-4">
           <div className="text-center mb-12">
-            <h2 className="text-4xl font-bold mb-4">Technical Architecture</h2>
-            <p className="text-lg text-muted-foreground">Deep dive into our multi-layered approach</p>
+            <h2 className="text-4xl font-bold mb-4">System Architecture</h2>
+            <p className="text-lg text-muted-foreground max-w-3xl mx-auto">
+              Three-layer optimization stack: ESP32 hardware telemetry, MILP scheduling with Fourier forecasting, 
+              and Cerebras AI escalation for low-confidence scenarios.
+            </p>
           </div>
 
           <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
@@ -241,10 +163,10 @@ export default function Home() {
             <TabsContent value="overview" className="space-y-6">
               <Alert>
                 <Shield className="h-4 w-4" />
-                <AlertTitle>Systemic Decarbonization Strategy</AlertTitle>
+                <AlertTitle>Economic Forcing Function</AlertTitle>
                 <AlertDescription>
-                  We don't believe incremental consumer behavior changes will solve climate change. 
-                  Instead, we make renewables + storage so economically superior that fossil fuels become obsolete.
+                  The only sustainable path to decarbonization is making renewables + storage so cheap that 
+                  fossil generation becomes economically unviable. Small consumer behavior changes won't scale.
                 </AlertDescription>
               </Alert>
 
@@ -258,8 +180,8 @@ export default function Home() {
                   </CardHeader>
                   <CardContent className="space-y-4">
                     <p className="text-muted-foreground">
-                      By making renewables + storage cheaper than fossil generation, market forces 
-                      naturally drive the transition. No policy required—just better economics.
+                      US companies demand 3-5 year returns, but power infrastructure requires 10-12 year horizons. 
+                      This economic mismatch systematically favors fossil fuels over renewables + storage.
                     </p>
                     <div className="space-y-2">
                       <div className="flex justify-between text-sm">
@@ -590,34 +512,38 @@ Objective:
         </div>
       </section>
 
-      {/* Live Stats Dashboard Preview */}
+      {/* Technical Implementation */}
       <section ref={statsRef} className="py-20 bg-muted/5">
         <div className="container mx-auto px-4">
           <div className="text-center mb-12">
-            <h2 className="text-4xl font-bold mb-4">Real-Time Performance</h2>
-            <p className="text-lg text-muted-foreground">Live metrics from our hardware simulation</p>
+            <h2 className="text-4xl font-bold mb-4">The Problem We're Solving</h2>
+            <p className="text-lg text-muted-foreground max-w-3xl mx-auto">
+              US power infrastructure faces critical challenges: Chinese rare earth dependency, 
+              short-term investment cycles, and misaligned economic incentives that favor fossil fuels.
+            </p>
           </div>
           
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-6 mb-12">
-            <Card className="text-center p-6">
-              <div className="stat-number text-4xl font-bold text-primary mb-2" data-value="6">0</div>
-              <p className="text-muted-foreground">Active Consumers</p>
-              <Progress value={100} className="h-1 mt-2" />
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-8 mb-12">
+            <Card className="p-6">
+              <h3 className="text-xl font-semibold mb-3 text-red-600">Supply Chain Crisis</h3>
+              <p className="text-muted-foreground text-sm leading-relaxed">
+                80% of rare earth metals for batteries and solar panels come from China. 
+                This creates strategic vulnerability for US energy independence.
+              </p>
             </Card>
-            <Card className="text-center p-6">
-              <div className="stat-number text-4xl font-bold text-primary mb-2" data-value="100">0</div>
-              <p className="text-muted-foreground">Hours Storage</p>
-              <Progress value={67} className="h-1 mt-2" />
+            <Card className="p-6">
+              <h3 className="text-xl font-semibold mb-3 text-orange-600">Investment Mismatch</h3>
+              <p className="text-muted-foreground text-sm leading-relaxed">
+                US companies demand 3-5 year returns, but power grid infrastructure 
+                requires 10-12 year investment horizons. This favors fossil fuels.
+              </p>
             </Card>
-            <Card className="text-center p-6">
-              <div className="stat-number text-4xl font-bold text-primary mb-2" data-value="3000">0</div>
-              <p className="text-muted-foreground">Tokens/Second</p>
-              <Progress value={85} className="h-1 mt-2" />
-            </Card>
-            <Card className="text-center p-6">
-              <div className="stat-number text-4xl font-bold text-primary mb-2" data-value="2">0</div>
-              <p className="text-muted-foreground">Update Frequency</p>
-              <Progress value={95} className="h-1 mt-2" />
+            <Card className="p-6">
+              <h3 className="text-xl font-semibold mb-3 text-blue-600">Economic Forcing</h3>
+              <p className="text-muted-foreground text-sm leading-relaxed">
+                Making renewables + storage so cheap that fossil generation becomes 
+                economically unviable is the only sustainable path forward.
+              </p>
             </Card>
           </div>
 
@@ -626,22 +552,19 @@ Objective:
               <CardHeader>
                 <CardTitle className="flex items-center gap-2">
                   <Power className="text-primary" size={20} />
-                  System Status
+                  Our Solution
                 </CardTitle>
               </CardHeader>
               <CardContent className="space-y-3">
-                <div className="flex items-center justify-between">
-                  <span className="text-sm">Grid Stability</span>
-                  <Badge variant="default">Optimal</Badge>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-sm">AI Confidence</span>
-                  <Badge variant="secondary">High (94%)</Badge>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-sm">Forecast Accuracy</span>
-                  <Badge variant="secondary">89.2%</Badge>
-                </div>
+                <p className="text-sm text-muted-foreground">
+                  Iron-air batteries store electricity by rusting and de-oxidizing iron on demand. 
+                  Can handle 3+ days of community power using abundant materials.
+                </p>
+                <ul className="text-xs space-y-1 text-muted-foreground">
+                  <li>• No rare earth metals required</li>
+                  <li>• 100+ hour discharge duration</li>
+                  <li>• Uses iron, water, and air only</li>
+                </ul>
               </CardContent>
             </Card>
 
@@ -649,31 +572,19 @@ Objective:
               <CardHeader>
                 <CardTitle className="flex items-center gap-2">
                   <TrendingUp className="text-primary" size={20} />
-                  Performance Metrics
+                  Technical Implementation
                 </CardTitle>
               </CardHeader>
               <CardContent className="space-y-3">
-                <div>
-                  <div className="flex justify-between text-sm mb-1">
-                    <span>Supply Efficiency</span>
-                    <span className="font-mono">96.7%</span>
-                  </div>
-                  <Progress value={97} className="h-2" />
-                </div>
-                <div>
-                  <div className="flex justify-between text-sm mb-1">
-                    <span>Demand Satisfaction</span>
-                    <span className="font-mono">98.1%</span>
-                  </div>
-                  <Progress value={98} className="h-2" />
-                </div>
-                <div>
-                  <div className="flex justify-between text-sm mb-1">
-                    <span>Response Time</span>
-                    <span className="font-mono">1.2ms</span>
-                  </div>
-                  <Progress value={94} className="h-2" />
-                </div>
+                <p className="text-sm text-muted-foreground">
+                  Physical ESP32 microgrid with 6 consumer loads, resistive transmission losses, 
+                  and sine-wave demand modulation. Real hardware generates 24Hz telemetry.
+                </p>
+                <ul className="text-xs space-y-1 text-muted-foreground">
+                  <li>• MILP optimization with CBC solver</li>
+                  <li>• Fourier forecasting (K=1-2 terms)</li>
+                  <li>• Cerebras AI (3000+ tokens/sec)</li>
+                </ul>
               </CardContent>
             </Card>
 
@@ -681,26 +592,20 @@ Objective:
               <CardHeader>
                 <CardTitle className="flex items-center gap-2">
                   <Shield className="text-primary" size={20} />
-                  Reliability
+                  Demo Architecture
                 </CardTitle>
               </CardHeader>
               <CardContent className="space-y-3">
-                <div className="flex items-center gap-2 text-sm">
-                  <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
-                  <span>All systems operational</span>
-                </div>
-                <div className="flex items-center gap-2 text-sm">
-                  <div className="w-2 h-2 bg-green-500 rounded-full"></div>
-                  <span>WebSocket connected</span>
-                </div>
-                <div className="flex items-center gap-2 text-sm">
-                  <div className="w-2 h-2 bg-green-500 rounded-full"></div>
-                  <span>Cerebras API ready</span>
-                </div>
-                <div className="flex items-center gap-2 text-sm">
-                  <div className="w-2 h-2 bg-yellow-500 rounded-full"></div>
-                  <span>Iron-air manual mode</span>
-                </div>
+                <p className="text-sm text-muted-foreground">
+                  Single-cell iron-air battery manually connected to demonstrate backup power 
+                  when ESP32 "goes dark" to simulate grid outage.
+                </p>
+                <ul className="text-xs space-y-1 text-muted-foreground">
+                  <li>• Step-up/down transformers</li>
+                  <li>• Resistive transmission losses</li>
+                  <li>• 6 consumer loads (LEDs, motors, fans)</li>
+                  <li>• Manual iron-air failover</li>
+                </ul>
               </CardContent>
             </Card>
           </div>
@@ -710,20 +615,20 @@ Objective:
       {/* Call to Action */}
       <section className="py-20 bg-primary">
         <div className="container mx-auto px-4 text-center">
-          <h2 className="text-4xl font-bold text-primary-foreground mb-6">Experience the Future of Grid Management</h2>
+          <h2 className="text-4xl font-bold text-primary-foreground mb-6">Griddy: ESP32 Microgrid Optimization</h2>
           <p className="text-xl text-primary-foreground/80 mb-8 max-w-3xl mx-auto">
-            Watch our live hardware simulation demonstrate how AI-assisted routing, 
-            iron-air storage, and economic forcing functions create a sustainable energy future.
+            Hardware-in-the-loop demonstration of MILP power dispatch, Fourier demand forecasting, 
+            and Cerebras AI escalation for low-confidence scenarios.
           </p>
           <div className="flex flex-col sm:flex-row gap-4 justify-center items-center">
             <Button size="lg" variant="secondary" className="text-lg px-8 py-6" asChild>
               <Link href="/metrics">
-                Launch Live Dashboard <ArrowRight className="ml-2" size={20} />
+                View Dashboard <ArrowRight className="ml-2" size={20} />
               </Link>
             </Button>
             <Button size="lg" variant="outline" className="text-lg px-8 py-6 bg-primary-foreground/10 border-primary-foreground/20 text-primary-foreground hover:bg-primary-foreground/20" asChild>
-              <Link href="https://github.com/formenergy/iron-air" target="_blank" rel="noreferrer">
-                View Technical Papers
+              <Link href="https://formenergy.com" target="_blank" rel="noreferrer">
+                Iron-Air Battery Tech
               </Link>
             </Button>
           </div>

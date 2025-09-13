@@ -54,14 +54,14 @@ export default function MetricsPage() {
 
   return (
     <main className="mx-auto max-w-6xl px-4 py-8">
-      <h1 className="text-2xl font-semibold tracking-tight">Live Metrics</h1>
-      <p className="text-muted-foreground">Updates every ~2 seconds from the backend.</p>
+      <h1 className="text-2xl font-semibold tracking-tight">Griddy Dashboard</h1>
+      <p className="text-muted-foreground">ESP32 hardware telemetry → MILP optimization → dispatch commands (24Hz)</p>
 
       <div className="mt-6 grid gap-6 md:grid-cols-2">
         <Card>
           <CardHeader>
-            <CardTitle>Supply vs Demand</CardTitle>
-            <CardDescription>Total across nodes</CardDescription>
+            <CardTitle>Power Flow Optimization</CardTitle>
+            <CardDescription>MILP dispatch vs consumer demand (Amps)</CardDescription>
           </CardHeader>
           <CardContent>
             <ChartContainer
@@ -83,8 +83,8 @@ export default function MetricsPage() {
 
         <Card>
           <CardHeader>
-            <CardTitle>Latest Snapshot</CardTitle>
-            <CardDescription>{latest ? new Date(latest.timestamp).toLocaleTimeString() : "—"}</CardDescription>
+            <CardTitle>Node Status</CardTitle>
+            <CardDescription>{latest ? `Last update: ${new Date(latest.timestamp).toLocaleTimeString()}` : "Waiting for ESP32..."}</CardDescription>
           </CardHeader>
           <CardContent>
             <div className="text-sm grid grid-cols-3 gap-3">

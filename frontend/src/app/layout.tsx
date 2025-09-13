@@ -15,8 +15,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "TerraGrid - AI-Assisted Microgrid Routing",
-  description: "Revolutionary power grid simulation with real hardware, Cerebras AI assistance, and iron-air battery storage. Making fossil generation economically unviable.",
+  title: "Griddy - ESP32 Microgrid Optimization",
+  description: "Hardware-in-the-loop microgrid optimization using ESP32, MILP algorithms, Fourier forecasting, and Cerebras AI escalation. HackMIT 2025 project.",
 };
 
 export default function RootLayout({

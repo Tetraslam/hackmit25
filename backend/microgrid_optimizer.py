@@ -9,13 +9,16 @@ This module implements a real-time energy dispatch system for microgrids that:
 
 """
 
-import numpy as np
-from scipy import fft
-from pulp import *
 import time
-from typing import List, Dict, Tuple, Optional, Any
-from dataclasses import dataclass
 from collections import defaultdict
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional, Tuple
+
+import numpy as np
+from pulp import (PULP_CBC_CMD, LpMinimize, LpProblem, LpStatus,
+                  LpStatusOptimal, LpVariable, lpSum, value)
+from scipy import fft
+
 # import logging
 
 # Configure logging for debugging
@@ -206,8 +209,18 @@ class MicrogridOptimizer:
         frequencies = fft.fftfreq(len(demands))
         
         # Keep only K=2 dominant frequency components (excluding DC)
-        K = min(2, len(fft_vals) // 2)
-        magnitudes = np.abs(fft_vals[1:len(fft_vals)//2])  # Exclude DC component
+        half_len = len(fft_vals) // 2
+        if half_len <= 1:
+            # Not enough frequency components for Fourier analysis
+            return np.full(self.horizon, latest_demand)
+            
+        magnitudes = np.abs(fft_vals[1:half_len])  # Exclude DC component
+        
+        if len(magnitudes) == 0:
+            # Fallback to flat forecast if insufficient frequency data
+            return np.full(self.horizon, latest_demand)
+            
+        K = min(2, len(magnitudes))  # Use available frequency components
         dominant_indices = np.argpartition(magnitudes, -K)[-K:] + 1  # Add 1 to account for skipping DC
         
         # Reconstruct signal using only dominant frequencies

@@ -441,7 +441,7 @@ function PowerFlowLines({ explosionProgress }: { explosionProgress: number }) {
   
   useFrame(({ clock }) => {
     if (linesRef.current) {
-      linesRef.current.children.forEach((child, i) => {
+      linesRef.current.children.forEach((child: THREE.Object3D, i: number) => {
         if (child instanceof THREE.Mesh) {
           const material = child.material as THREE.MeshStandardMaterial
           material.emissiveIntensity = 0.3 + Math.sin(clock.elapsedTime * 3 + i) * 0.2
