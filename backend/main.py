@@ -16,13 +16,18 @@ Author: HackMIT 2025 Team
 import asyncio
 import json
 import logging
+# Import binary protocol from project root
+import sys
 import time
 from collections import defaultdict, deque
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import numpy as np
 import websockets
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from microgrid_optimizer import DemandRecord, EnergySource, MicrogridOptimizer
@@ -31,6 +36,9 @@ from rich.console import Console
 from rich.live import Live
 from rich.table import Table
 from rich.text import Text
+
+from binary_protocol import (NODE_TYPE_CONSUMER, BinaryProtocol, DispatchNode,
+                             DispatchPacket, TelemetryPacket)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -44,7 +52,8 @@ latest_metrics: Dict[str, Any] = {}
 confidence_scores = deque(maxlen=100)
 
 # Performance tracking
-telemetry_timestamps = deque(maxlen=100)  # Track timing for Hz calculation
+telemetry_timestamps = deque(maxlen=100)  # Track ESP32 input timing for Hz calculation
+dispatch_timestamps = deque(maxlen=100)  # Track output dispatch timing for Hz calculation
 optimization_times = deque(maxlen=50)  # Track optimization performance
 dispatch_counts = deque(maxlen=50)  # Track dispatch counts
 console = Console()
@@ -71,21 +80,41 @@ def create_metrics_table() -> Table:
     table.add_column("Value", style="magenta")
     table.add_column("Status", style="green")
     
-    # Calculate actual Hz from telemetry timestamps
-    actual_hz = 0.0
+    # Calculate actual input Hz from ESP32 telemetry timestamps
+    input_hz = 0.0
     if len(telemetry_timestamps) >= 2:
         time_diffs = [telemetry_timestamps[i] - telemetry_timestamps[i-1] 
                      for i in range(1, len(telemetry_timestamps))]
         avg_interval = np.mean(time_diffs)
-        actual_hz = 1.0 / avg_interval if avg_interval > 0 else 0.0
+        input_hz = 1.0 / avg_interval if avg_interval > 0 else 0.0
+    
+    # Calculate actual output Hz from dispatch timestamps
+    output_hz = 0.0
+    if len(dispatch_timestamps) >= 2:
+        time_diffs = [dispatch_timestamps[i] - dispatch_timestamps[i-1] 
+                     for i in range(1, len(dispatch_timestamps))]
+        avg_interval = np.mean(time_diffs)
+        output_hz = 1.0 / avg_interval if avg_interval > 0 else 0.0
     
     # ESP32 Connection
     esp32_status = "🟢 Connected" if hardware_websocket else "🔴 Disconnected"
     table.add_row("ESP32 Connection", esp32_status, "")
     
-    # Telemetry Rate
-    hz_color = "green" if actual_hz > 20 else "yellow" if actual_hz > 10 else "red"
-    table.add_row("Telemetry Rate", f"{actual_hz:.1f} Hz", f"[{hz_color}]Target: 24Hz[/{hz_color}]")
+    # Input Frequency (ESP32 → Backend)
+    input_color = "green" if input_hz > 20 else "yellow" if input_hz > 10 else "red"
+    table.add_row("Input Frequency", f"{input_hz:.1f} Hz", f"[{input_color}]ESP32 → Backend[/{input_color}]")
+    
+    # Output Frequency (Backend → ESP32)  
+    output_color = "green" if output_hz > 15 else "yellow" if output_hz > 5 else "red"
+    table.add_row("Output Frequency", f"{output_hz:.1f} Hz", f"[{output_color}]Backend → ESP32[/{output_color}]")
+    
+    # Frequency Efficiency (Output/Input ratio)
+    if input_hz > 0 and output_hz > 0:
+        ratio = output_hz / input_hz
+        ratio_color = "green" if ratio > 0.8 else "yellow" if ratio > 0.5 else "red"
+        table.add_row("I/O Efficiency", f"{ratio:.1%}", f"[{ratio_color}]Output/Input ratio[/{ratio_color}]")
+    else:
+        table.add_row("I/O Efficiency", "N/A", "Waiting for data...")
     
     # Buffer Stats  
     table.add_row("Telemetry Buffer", f"{len(telemetry_buffer)} records", f"Max: 1000")
@@ -110,6 +139,14 @@ def create_metrics_table() -> Table:
     
     # Frontend Clients
     table.add_row("Frontend Clients", f"{len(frontend_clients)} connected", "")
+    
+    # Protocol Efficiency
+    if len(telemetry_buffer) > 0:
+        # Estimate data savings with binary protocol
+        json_size_est = 150  # Estimated JSON size per packet
+        binary_size_est = 63  # Binary size for 6 nodes
+        savings = (1 - binary_size_est / json_size_est) * 100
+        table.add_row("Protocol Efficiency", f"{savings:.0f}% smaller", f"Binary vs JSON")
     
     return table
 
@@ -139,8 +176,20 @@ async def connect_to_esp32():
                 
                 async for message in websocket:
                     try:
-                        data = json.loads(message)
-                        await process_hardware_telemetry(data)
+                        # Handle both binary and JSON for backward compatibility
+                        if isinstance(message, bytes):
+                            # Binary protocol
+                            packet = BinaryProtocol.decode_telemetry(message)
+                            if packet:
+                                # Convert to JSON-compatible format for existing processing
+                                data = BinaryProtocol.telemetry_to_json_compat(packet)
+                                await process_hardware_telemetry(data)
+                            else:
+                                logger.warning(f"Invalid binary telemetry: {len(message)} bytes")
+                        else:
+                            # Legacy JSON protocol
+                            data = json.loads(message)
+                            await process_hardware_telemetry(data)
                     except json.JSONDecodeError:
                         logger.warning(f"Invalid JSON from ESP32: {message}")
                     except Exception as e:
@@ -271,20 +320,24 @@ async def send_dispatch_to_hardware(dispatch_instructions: List[Dict[str, Any]])
         return
     
     try:
-        # Convert to ESP32 expected format
-        command = {
-            "nodes": [
-                {
-                    "id": int(d["id"]),  # Convert string node_id back to int for ESP32
-                    "supply": float(d["supply_amps"]) / 5.0,  # Normalize to 0-1 for PWM
-                    "source": 1  # Source ID (simplified)
-                }
-                for d in dispatch_instructions
-            ]
-        }
+        # Convert to binary dispatch format
+        dispatch_nodes = []
+        for d in dispatch_instructions:
+            dispatch_nodes.append(DispatchNode(
+                id=int(d["id"]),  # Convert string node_id back to int for ESP32
+                supply=float(d["supply_amps"]) / 5.0,  # Normalize to 0-1 for PWM
+                source=1  # Source ID (simplified)
+            ))
         
-        await hardware_websocket.send(json.dumps(command))
-        logger.debug(f"Sent dispatch to ESP32: {len(command['nodes'])} commands")
+        dispatch_packet = DispatchPacket(nodes=dispatch_nodes)
+        binary_data = BinaryProtocol.encode_dispatch(dispatch_packet)
+        
+        await hardware_websocket.send(binary_data)
+        
+        # Track output frequency
+        dispatch_timestamps.append(time.time())
+        
+        logger.debug(f"Sent binary dispatch to ESP32: {len(dispatch_nodes)} commands ({len(binary_data)} bytes)")
         
     except Exception as e:
         logger.error(f"Failed to send dispatch to hardware: {e}")

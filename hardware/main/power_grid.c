@@ -18,6 +18,7 @@
 #include "driver/ledc.h"
 #include "cJSON.h"
 #include "esp_http_client.h"
+#include "binary_protocol.h"
 
 #define POWER_GRID_TAG "power_grid"
 #define DATA_SEND_INTERVAL_MS 42  // 24 Hz = ~41.67ms
@@ -64,6 +65,7 @@ static volatile bool should_send_data = false;
 static power_grid_data_t grid_data;
 static char json_buffer[MAX_JSON_BUFFER];
 static uint8_t ws_buffer[MAX_WS_BUFFER];
+static uint8_t binary_buffer[256];  // Buffer for binary protocol
 static ledc_channel_t node_to_channel[MAX_NODES] = {0};
 
 static void init_pwm_outputs(void)
@@ -164,6 +166,31 @@ static void update_dummy_data(void)
     }
 }
 
+static size_t generate_binary_telemetry(uint8_t *buffer, size_t buffer_size)
+{
+    telemetry_packet_t packet;
+    
+    // Fill packet header
+    packet.magic = TELEMETRY_MAGIC;
+    packet.timestamp = grid_data.timestamp;
+    packet.node_count = grid_data.node_count;
+    
+    // Fill node data
+    for (int i = 0; i < grid_data.node_count && i < MAX_NODES_PER_PACKET; i++) {
+        power_node_t *src_node = &grid_data.nodes[i];
+        telemetry_node_t *dst_node = &packet.nodes[i];
+        
+        dst_node->id = src_node->id;
+        dst_node->type = (strcmp(src_node->type, "consumer") == 0) ? NODE_TYPE_CONSUMER : NODE_TYPE_POWER;
+        dst_node->demand = src_node->demand;
+        dst_node->fulfillment = src_node->fulfillment;
+    }
+    
+    // Encode to binary buffer
+    return encode_telemetry(&packet, buffer);
+}
+
+// Keep JSON generation for fallback/debugging
 static int generate_json_data(char *buffer, size_t buffer_size)
 {
     cJSON *root = cJSON_CreateObject();
@@ -209,14 +236,15 @@ static void data_send_task(void *pvParameters)
         if (should_send_data && ws_fd >= 0 && server_handle) {
             update_dummy_data();
 
-            int json_len = generate_json_data(json_buffer, sizeof(json_buffer));
-            if (json_len > 0) {
+            // Use binary protocol for efficiency
+            size_t binary_len = generate_binary_telemetry(binary_buffer, sizeof(binary_buffer));
+            if (binary_len > 0) {
                 httpd_ws_frame_t ws_frame = {
                     .final = true,
                     .fragmented = false,
-                    .type = HTTPD_WS_TYPE_TEXT,
-                    .payload = (uint8_t*)json_buffer,
-                    .len = json_len
+                    .type = HTTPD_WS_TYPE_BINARY,  // Binary instead of text
+                    .payload = binary_buffer,
+                    .len = binary_len
                 };
 
                 esp_err_t ret = httpd_ws_send_frame_async(server_handle, ws_fd, &ws_frame);
@@ -226,6 +254,12 @@ static void data_send_task(void *pvParameters)
                         ESP_LOGI(POWER_GRID_TAG, "Connection lost, stopping data transmission");
                         ws_fd = -1;
                         should_send_data = false;
+                    }
+                } else {
+                    // Log efficiency gain
+                    static int log_counter = 0;
+                    if (++log_counter % 240 == 0) {  // Log every 10 seconds at 24Hz
+                        ESP_LOGI(POWER_GRID_TAG, "Binary telemetry: %d bytes (vs ~150 JSON)", binary_len);
                     }
                 }
             }
@@ -270,7 +304,26 @@ static esp_err_t power_grid_ws_handler(httpd_req_t *req)
                     ESP_LOGI(POWER_GRID_TAG, "WebSocket connection closed by client");
                     ws_fd = -1;
                     should_send_data = false;
+                } else if (ws_pkt.type == HTTPD_WS_TYPE_BINARY) {
+                    // Binary dispatch protocol
+                    dispatch_packet_t dispatch_packet;
+                    if (decode_dispatch(ws_buffer, ws_pkt.len, &dispatch_packet)) {
+                        for (int i = 0; i < dispatch_packet.node_count; i++) {
+                            dispatch_node_t *node = &dispatch_packet.nodes[i];
+                            set_output_pwm(node->id, node->supply);
+                            
+                            // Log occasionally for debugging
+                            static int log_counter = 0;
+                            if (++log_counter % 240 == 0) {  // Every 10 seconds
+                                ESP_LOGI(POWER_GRID_TAG, "Binary dispatch: node %d gets %.3f supply from source %d",
+                                        node->id, node->supply, node->source);
+                            }
+                        }
+                    } else {
+                        ESP_LOGW(POWER_GRID_TAG, "Invalid binary dispatch received (%d bytes)", ws_pkt.len);
+                    }
                 } else if (ws_pkt.type == HTTPD_WS_TYPE_TEXT) {
+                    // Legacy JSON protocol for backward compatibility
                     ws_buffer[ws_pkt.len] = '\0';
 
                     cJSON *json = cJSON_Parse((char *)ws_buffer);
@@ -290,8 +343,8 @@ static esp_err_t power_grid_ws_handler(httpd_req_t *req)
                                         float supply_val = (float)cJSON_GetNumberValue(supply);
                                         int source_id = (int)cJSON_GetNumberValue(source);
 
-                                        // ESP_LOGI(POWER_GRID_TAG, "Received: node %d gets %.3f supply from source %d",
-                                        //         node_id, supply_val, source_id);
+                                        ESP_LOGI(POWER_GRID_TAG, "JSON fallback: node %d gets %.3f supply from source %d",
+                                                node_id, supply_val, source_id);
                                         set_output_pwm(node_id, supply_val);
                                     }
                                 }
