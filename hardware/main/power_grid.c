@@ -17,6 +17,7 @@
 #include "protocol_examples_common.h"
 #include "driver/ledc.h"
 #include "cJSON.h"
+#include "esp_http_client.h"
 
 #define POWER_GRID_TAG "power_grid"
 #define DATA_SEND_INTERVAL_MS 42  // 24 Hz = ~41.67ms
@@ -29,6 +30,7 @@
 #define MAX_DUTY (1 << LEDC_DUTY_RES) - 1
 
 #define NUM_OUTPUT_PINS 3
+#define MAX_WS_BUFFER 512
 
 typedef struct {
     int id;
@@ -50,9 +52,9 @@ typedef struct {
 } output_pin_map_t;
 
 static const output_pin_map_t output_pins[NUM_OUTPUT_PINS] = {
-    {14, 14, LEDC_CHANNEL_0},
-    {27, 27, LEDC_CHANNEL_1},
-    {26, 26, LEDC_CHANNEL_2}
+    {1, 14, LEDC_CHANNEL_0},
+    {2, 27, LEDC_CHANNEL_1},
+    {3, 26, LEDC_CHANNEL_2}
 };
 
 static httpd_handle_t server_handle = NULL;
@@ -61,6 +63,8 @@ static TaskHandle_t data_task = NULL;
 static volatile bool should_send_data = false;
 static power_grid_data_t grid_data;
 static char json_buffer[MAX_JSON_BUFFER];
+static uint8_t ws_buffer[MAX_WS_BUFFER];
+static ledc_channel_t node_to_channel[MAX_NODES] = {0};
 
 static void init_pwm_outputs(void)
 {
@@ -94,15 +98,11 @@ static void set_output_pwm(int node_id, float supply)
     if (supply < 0.0f) supply = 0.0f;
     if (supply > 1.0f) supply = 1.0f;
 
-    for (int i = 0; i < NUM_OUTPUT_PINS; i++) {
-        if (output_pins[i].node_id == node_id) {
-            uint32_t duty = (uint32_t)(supply * MAX_DUTY);
-            ledc_set_duty(LEDC_MODE, output_pins[i].channel, duty);
-            ledc_update_duty(LEDC_MODE, output_pins[i].channel);
-            ESP_LOGI(POWER_GRID_TAG, "Set node %d (pin %d) to %.3f%% duty",
-                     node_id, output_pins[i].gpio_pin, supply * 100.0f);
-            break;
-        }
+    // Direct lookup - node_id is 1-based, array is 0-based
+    if (node_id >= 1 && node_id <= MAX_NODES && node_to_channel[node_id - 1] != 0) {
+        uint32_t duty = (uint32_t)(supply * MAX_DUTY);
+        ledc_set_duty(LEDC_MODE, node_to_channel[node_id - 1], duty);
+        ledc_update_duty(LEDC_MODE, node_to_channel[node_id - 1]);
     }
 }
 
@@ -116,6 +116,15 @@ static void init_dummy_nodes(void)
     grid_data.nodes[3] = (power_node_t){4, "consumer", 1.8, 0.88};
     grid_data.nodes[4] = (power_node_t){5, "consumer", 3.2, 0.95};
     grid_data.nodes[5] = (power_node_t){6, "power", 0.0, 0.91};
+
+    // Initialize node-to-channel mapping
+    memset(node_to_channel, 0, sizeof(node_to_channel));
+    for (int i = 0; i < NUM_OUTPUT_PINS; i++) {
+        int node_idx = output_pins[i].node_id - 1; // Convert to 0-based
+        if (node_idx >= 0 && node_idx < MAX_NODES) {
+            node_to_channel[node_idx] = output_pins[i].channel;
+        }
+    }
 }
 
 static void update_dummy_data(void)
@@ -252,21 +261,19 @@ static esp_err_t power_grid_ws_handler(httpd_req_t *req)
         return ESP_OK;
     }
 
-    if (ws_pkt.len > 0) {
-        uint8_t *buf = malloc(ws_pkt.len + 1);
-        if (buf) {
-            ws_pkt.payload = buf;
-            ret = httpd_ws_recv_frame(req, &ws_pkt, ws_pkt.len);
+    if (ws_pkt.len > 0 && ws_pkt.len < MAX_WS_BUFFER - 1) {
+        ws_pkt.payload = ws_buffer;
+        ret = httpd_ws_recv_frame(req, &ws_pkt, ws_pkt.len);
 
-            if (ret == ESP_OK) {
+        if (ret == ESP_OK) {
                 if (ws_pkt.type == HTTPD_WS_TYPE_CLOSE) {
                     ESP_LOGI(POWER_GRID_TAG, "WebSocket connection closed by client");
                     ws_fd = -1;
                     should_send_data = false;
                 } else if (ws_pkt.type == HTTPD_WS_TYPE_TEXT) {
-                    buf[ws_pkt.len] = '\0';
+                    ws_buffer[ws_pkt.len] = '\0';
 
-                    cJSON *json = cJSON_Parse((char *)buf);
+                    cJSON *json = cJSON_Parse((char *)ws_buffer);
                     if (json) {
                         cJSON *nodes = cJSON_GetObjectItem(json, "nodes");
                         if (cJSON_IsArray(nodes)) {
@@ -283,8 +290,8 @@ static esp_err_t power_grid_ws_handler(httpd_req_t *req)
                                         float supply_val = (float)cJSON_GetNumberValue(supply);
                                         int source_id = (int)cJSON_GetNumberValue(source);
 
-                                        ESP_LOGI(POWER_GRID_TAG, "Received: node %d gets %.3f supply from source %d",
-                                                node_id, supply_val, source_id);
+                                        // ESP_LOGI(POWER_GRID_TAG, "Received: node %d gets %.3f supply from source %d",
+                                        //         node_id, supply_val, source_id);
                                         set_output_pwm(node_id, supply_val);
                                     }
                                 }
@@ -296,9 +303,6 @@ static esp_err_t power_grid_ws_handler(httpd_req_t *req)
                     }
                 }
             }
-
-            free(buf);
-        }
     }
 
     return ESP_OK;
@@ -336,6 +340,39 @@ void power_grid_cleanup(void)
     }
 }
 
+static void post_ip_address(void)
+{
+    esp_netif_t *netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+    esp_netif_ip_info_t ip_info;
+
+    if (esp_netif_get_ip_info(netif, &ip_info) == ESP_OK) {
+        char ip_str[16];
+        snprintf(ip_str, sizeof(ip_str), IPSTR, IP2STR(&ip_info.ip));
+        ESP_LOGI(POWER_GRID_TAG, "Local IP address: %s", ip_str);
+
+        esp_http_client_config_t config = {
+            .url = "http://kv.wfeng.dev/hackmit25:ip",
+            .method = HTTP_METHOD_POST,
+        };
+
+        esp_http_client_handle_t client = esp_http_client_init(&config);
+        esp_http_client_set_post_field(client, ip_str, strlen(ip_str));
+        esp_http_client_set_header(client, "Content-Type", "text/plain");
+
+        esp_err_t err = esp_http_client_perform(client);
+        if (err == ESP_OK) {
+            int status_code = esp_http_client_get_status_code(client);
+            ESP_LOGI(POWER_GRID_TAG, "IP address posted successfully, status: %d", status_code);
+        } else {
+            ESP_LOGE(POWER_GRID_TAG, "Failed to post IP address: %s", esp_err_to_name(err));
+        }
+
+        esp_http_client_cleanup(client);
+    } else {
+        ESP_LOGE(POWER_GRID_TAG, "Failed to get IP address");
+    }
+}
+
 static httpd_handle_t start_webserver(void)
 {
     httpd_handle_t server = NULL;
@@ -361,6 +398,8 @@ void app_main(void)
     ESP_LOGI(POWER_GRID_TAG, "Connecting to network...");
     ESP_ERROR_CHECK(example_connect());
     ESP_LOGI(POWER_GRID_TAG, "Network connected");
+
+    post_ip_address();
 
     httpd_handle_t server = start_webserver();
     if (server) {
