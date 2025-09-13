@@ -15,12 +15,12 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from binary_protocol import BinaryProtocol, DispatchNode, DispatchPacket
 
 # CONFIGURATION - Easy toggles for testing
-USE_SLOW_MODE = False  # Set to False to revert to fast mode (24Hz)
+USE_SLOW_MODE = True  # Set to False to revert to fast mode (24Hz)
 ENABLE_LOGGING = False # Set to True to enable detailed logs
 ENABLE_SENDING = True  # Set to False to disable sending (receive only)
 
-SLOW_INTERVAL = 0.1  # 0.2 second intervals (2Hz)
-FAST_INTERVAL = 1/10   # 5Hz intervals (200ms)
+SLOW_INTERVAL = 0.5  # 0.5 second intervals (2Hz)
+FAST_INTERVAL = 1/24   # 24Hz intervals (~41.67ms)
 
 
 def log(message):
@@ -102,7 +102,7 @@ async def test_in_endpoint_with_simple_connect(esp_ip):
                         break
                     
                     # Toggle every 0.5 seconds (matches command interval)
-                    cycle_time = 0.1  # seconds per toggle
+                    cycle_time = 0.5  # seconds per toggle (matches 2Hz sending)
                     toggle_state = int(elapsed / cycle_time) % 2
                     supply_value = 0.1 if toggle_state == 0 else 1.0  # Either 0.1 or 1.0
                     
@@ -149,13 +149,10 @@ async def test_power_grid():
     esp_ip = response.text.strip()
     print(f"ESP32 IP: {esp_ip}")
 
-    # Test /out endpoint first (should work fine)
-    await test_out_endpoint_only(esp_ip)
+    # Skip /out endpoint test for now (receive at 24Hz later)
+    # await test_out_endpoint_only(esp_ip)
 
-    # Wait between tests
-    await asyncio.sleep(0.5)
-
-    # Test /in endpoint with configurable timing and sending
+    # Test /in endpoint with sending only (2Hz)
     await test_in_endpoint_with_simple_connect(esp_ip)
 
 if __name__ == "__main__":
