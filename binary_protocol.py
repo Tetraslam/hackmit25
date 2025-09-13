@@ -143,18 +143,21 @@ class BinaryProtocol:
             node_count, = struct.unpack('<B', data[offset:offset+1])
             offset += 1
             
-            # Validate remaining data length
-            expected_len = 9 + (node_count * 9)
+            # ESP32 C struct has padding - actual node size is 10 bytes, not 9
+            expected_len = 9 + (node_count * 10)  # Account for 1-byte padding per node
             if len(data) != expected_len:
                 return None
             
-            # Parse nodes
+            # Parse nodes with padding
             nodes = []
-            for _ in range(node_count):
+            for i in range(node_count):
                 node_id, = struct.unpack('<B', data[offset:offset+1])
                 offset += 1
                 
                 node_type, = struct.unpack('<B', data[offset:offset+1])
+                offset += 1
+                
+                # Skip 1 byte of padding due to C struct alignment
                 offset += 1
                 
                 demand, = struct.unpack('<f', data[offset:offset+4])
@@ -172,7 +175,7 @@ class BinaryProtocol:
             
             return TelemetryPacket(timestamp=timestamp, nodes=nodes)
             
-        except struct.error:
+        except struct.error as e:
             return None
     
     @staticmethod

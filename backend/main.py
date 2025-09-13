@@ -179,19 +179,13 @@ async def connect_to_esp32():
                         # Handle both binary and JSON for backward compatibility
                         if isinstance(message, bytes):
                             # Binary protocol
-                            logger.debug(f"Received binary data: {len(message)} bytes")
-                            # Debug: print first few bytes to see what we're getting
-                            if len(message) >= 4:
-                                magic = int.from_bytes(message[:4], byteorder='little')
-                                logger.debug(f"Magic bytes: 0x{magic:08x} (expected: 0x{0x47524944:08x})")
-                            
                             packet = BinaryProtocol.decode_telemetry(message)
                             if packet:
                                 # Convert to JSON-compatible format for existing processing
                                 data = BinaryProtocol.telemetry_to_json_compat(packet)
                                 await process_hardware_telemetry(data)
                             else:
-                                logger.warning(f"Invalid binary telemetry: {len(message)} bytes - magic: 0x{magic:08x if len(message) >= 4 else 0:08x}")
+                                logger.warning(f"Invalid binary telemetry: {len(message)} bytes")
                         else:
                             # Legacy JSON protocol
                             data = json.loads(message)
