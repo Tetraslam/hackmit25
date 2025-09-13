@@ -173,7 +173,6 @@ async def connect_to_esp32_out():
 
     while True:
         try:
-<<<<<<< HEAD
             esp_ip = await get_esp32_ip()
             uri = f"ws://{esp_ip}/out"
             logger.info(f"Connecting to ESP32 /out at {uri}")
@@ -191,15 +190,6 @@ async def connect_to_esp32_out():
                 hardware_websocket_out = websocket
                 logger.info("Connected to ESP32 /out for telemetry")
 
-=======
-            uri = f"ws://{esp_ip}/ws"
-            logger.info(f"Connecting to ESP32 at {uri}")
-            
-            async with websockets.connect(uri) as websocket:
-                hardware_websocket = websocket
-                logger.info("Connected to ESP32 hardware")
-                
->>>>>>> 19832b94977aab4f6cfce250e9dab51a310eb283
                 async for message in websocket:
                     try:
                         if isinstance(message, bytes):
