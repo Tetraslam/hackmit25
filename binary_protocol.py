@@ -15,7 +15,7 @@ Telemetry Format (ESP32 → Backend):
   Timestamp: 4 bytes (uint32, milliseconds)
   Node Count: 1 byte (uint8)
   Nodes: Variable length
-    Each node: 9 bytes
+    Each node: 10 bytes
       - ID: 1 byte (uint8)
       - Type: 1 byte (0=power, 1=consumer)
       - Demand: 4 bytes (float32, amps)
@@ -32,7 +32,7 @@ Dispatch Format (Backend → ESP32):
       - Source: 1 byte (uint8, source ID)
 
 Total sizes:
-- Telemetry: 9 + (9 * node_count) bytes
+- Telemetry: 9 + (10 * node_count) bytes
 - Dispatch: 9 + (6 * node_count) bytes
 - For 6 nodes: Telemetry=63 bytes, Dispatch=45 bytes
 - JSON equivalent: ~200-300 bytes each
@@ -103,7 +103,7 @@ class BinaryProtocol:
         # Node count (1 byte)
         data.extend(struct.pack('<B', len(packet.nodes)))
         
-        # Nodes (9 bytes each)
+        # Nodes (10 bytes each)
         for node in packet.nodes:
             data.extend(struct.pack('<B', node.id))        # ID (1 byte)
             data.extend(struct.pack('<B', node.type))      # Type (1 byte)
@@ -143,35 +143,35 @@ class BinaryProtocol:
             node_count, = struct.unpack('<B', data[offset:offset+1])
             offset += 1
             
-            # ESP32 C struct has padding - actual node size is 10 bytes, not 9
-            expected_len = 9 + (node_count * 10)  # Account for 1-byte padding per node
-            if len(data) != expected_len:
+            # Parse nodes with fixed per-node stride (10 bytes)
+            remaining_bytes = len(data) - offset
+            if node_count == 0:
+                return TelemetryPacket(timestamp=timestamp, nodes=[])
+            bytes_per_node = remaining_bytes // node_count
+
+            if bytes_per_node < 10:
                 return None
-            
-            # Parse nodes with padding
+
             nodes = []
-            for i in range(node_count):
-                node_id, = struct.unpack('<B', data[offset:offset+1])
-                offset += 1
-                
-                node_type, = struct.unpack('<B', data[offset:offset+1])
-                offset += 1
-                
-                # Skip 1 byte of padding due to C struct alignment
-                offset += 1
-                
-                demand, = struct.unpack('<f', data[offset:offset+4])
-                offset += 4
-                
-                fulfillment, = struct.unpack('<f', data[offset:offset+4])
-                offset += 4
-                
+            for _ in range(node_count):
+                if offset + bytes_per_node > len(data):
+                    break
+
+                base = offset
+                node_id, = struct.unpack('<B', data[base:base+1])
+                node_type, = struct.unpack('<B', data[base+1:base+2])
+                demand, = struct.unpack('<f', data[base+2:base+6])
+                fulfillment, = struct.unpack('<f', data[base+6:base+10])
+
                 nodes.append(TelemetryNode(
                     id=node_id,
                     type=node_type,
                     demand=demand,
                     fulfillment=fulfillment
                 ))
+
+                # Advance by stride (tolerate any extra bytes per node if present)
+                offset += bytes_per_node
             
             return TelemetryPacket(timestamp=timestamp, nodes=nodes)
             

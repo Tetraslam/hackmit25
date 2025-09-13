@@ -179,13 +179,17 @@ async def connect_to_esp32():
                         # Handle both binary and JSON for backward compatibility
                         if isinstance(message, bytes):
                             # Binary protocol
+                            logger.info(f"Received binary message: {len(message)} bytes")
                             packet = BinaryProtocol.decode_telemetry(message)
                             if packet:
+                                logger.info(f"Successfully parsed binary telemetry: {len(packet.nodes)} nodes")
                                 # Convert to JSON-compatible format for existing processing
                                 data = BinaryProtocol.telemetry_to_json_compat(packet)
                                 await process_hardware_telemetry(data)
                             else:
-                                logger.warning(f"Invalid binary telemetry: {len(message)} bytes")
+                                logger.warning(f"Failed to parse binary telemetry: {len(message)} bytes")
+                                # Log first 20 bytes for debugging
+                                logger.warning(f"First 20 bytes: {message[:20].hex()}")
                         else:
                             # Legacy JSON protocol
                             data = json.loads(message)
@@ -228,7 +232,7 @@ async def process_hardware_telemetry(data: Dict[str, Any]):
         telemetry_buffer.extend(records)
         
         # Run optimization if we have enough data
-        if len(telemetry_buffer) >= 10:  # Need some history
+        if len(telemetry_buffer) >= 3:  # Reduced threshold for faster startup
             opt_start = time.time()
             
             try:
@@ -364,8 +368,8 @@ async def update_live_table():
     """Update the live metrics table every second."""
     global live_table
     
-    # Disable logging to keep table clean
-    logging.getLogger().setLevel(logging.WARNING)
+    # Temporarily keep INFO logging to debug
+    # logging.getLogger().setLevel(logging.WARNING)
     
     with Live(create_metrics_table(), console=console, refresh_per_second=2) as live:
         live_table = live
