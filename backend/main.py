@@ -27,6 +27,10 @@ from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from microgrid_optimizer import DemandRecord, EnergySource, MicrogridOptimizer
 from pydantic import BaseModel
+from rich.console import Console
+from rich.live import Live
+from rich.table import Table
+from rich.text import Text
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -38,6 +42,13 @@ optimizer = MicrogridOptimizer(epoch_len=1/24, horizon=10)
 telemetry_buffer = deque(maxlen=1000)  # Store last 1000 readings
 latest_metrics: Dict[str, Any] = {}
 confidence_scores = deque(maxlen=100)
+
+# Performance tracking
+telemetry_timestamps = deque(maxlen=100)  # Track timing for Hz calculation
+optimization_times = deque(maxlen=50)  # Track optimization performance
+dispatch_counts = deque(maxlen=50)  # Track dispatch counts
+console = Console()
+live_table = None
 
 # Energy sources configuration
 ENERGY_SOURCES = [
@@ -51,6 +62,56 @@ class TelemetryData(BaseModel):
 
 class DispatchCommand(BaseModel):
     nodes: List[Dict[str, Any]]
+
+def create_metrics_table() -> Table:
+    """Create the live metrics table."""
+    table = Table(title="🔋 Griddy - ESP32 Microgrid Optimization Metrics")
+    
+    table.add_column("Metric", style="cyan", no_wrap=True)
+    table.add_column("Value", style="magenta")
+    table.add_column("Status", style="green")
+    
+    # Calculate actual Hz from telemetry timestamps
+    actual_hz = 0.0
+    if len(telemetry_timestamps) >= 2:
+        time_diffs = [telemetry_timestamps[i] - telemetry_timestamps[i-1] 
+                     for i in range(1, len(telemetry_timestamps))]
+        avg_interval = np.mean(time_diffs)
+        actual_hz = 1.0 / avg_interval if avg_interval > 0 else 0.0
+    
+    # ESP32 Connection
+    esp32_status = "🟢 Connected" if hardware_websocket else "🔴 Disconnected"
+    table.add_row("ESP32 Connection", esp32_status, "")
+    
+    # Telemetry Rate
+    hz_color = "green" if actual_hz > 20 else "yellow" if actual_hz > 10 else "red"
+    table.add_row("Telemetry Rate", f"{actual_hz:.1f} Hz", f"[{hz_color}]Target: 24Hz[/{hz_color}]")
+    
+    # Buffer Stats  
+    table.add_row("Telemetry Buffer", f"{len(telemetry_buffer)} records", f"Max: 1000")
+    
+    # Optimization Performance
+    avg_opt_time = np.mean(optimization_times) if optimization_times else 0
+    opt_color = "green" if avg_opt_time < 50 else "yellow" if avg_opt_time < 100 else "red"
+    table.add_row("Optimization Time", f"{avg_opt_time:.1f}ms", f"[{opt_color}]Target: <50ms[/{opt_color}]")
+    
+    # Confidence Score
+    current_confidence = confidence_scores[-1] if confidence_scores else 0.0
+    conf_color = "green" if current_confidence > 0.8 else "yellow" if current_confidence > 0.5 else "red"
+    table.add_row("AI Confidence", f"{current_confidence:.1%}", f"[{conf_color}]Cerebras threshold: 50%[/{conf_color}]")
+    
+    # Active Nodes
+    unique_nodes = len(set(r.node_id for r in list(telemetry_buffer)[-20:])) if telemetry_buffer else 0
+    table.add_row("Active Nodes", f"{unique_nodes} consumers", "")
+    
+    # Dispatch Performance
+    avg_dispatches = np.mean(dispatch_counts) if dispatch_counts else 0
+    table.add_row("Avg Dispatches", f"{avg_dispatches:.1f} per cycle", "")
+    
+    # Frontend Clients
+    table.add_row("Frontend Clients", f"{len(frontend_clients)} connected", "")
+    
+    return table
 
 async def connect_to_esp32():
     """Connect to ESP32 hardware via WebSocket and handle telemetry stream."""
@@ -99,6 +160,9 @@ async def process_hardware_telemetry(data: Dict[str, Any]):
         timestamp = data.get("timestamp", int(time.time() * 1000)) / 1000  # Convert to seconds
         nodes = data.get("nodes", [])
         
+        # Track telemetry timing for Hz calculation
+        telemetry_timestamps.append(time.time())
+        
         # Convert to DemandRecord format
         records = []
         for node in nodes:
@@ -122,6 +186,10 @@ async def process_hardware_telemetry(data: Dict[str, Any]):
                 # Run MILP optimization
                 dispatch_instructions = optimizer.schedule(list(telemetry_buffer), ENERGY_SOURCES)
                 opt_time = (time.time() - opt_start) * 1000
+                
+                # Track performance metrics
+                optimization_times.append(opt_time)
+                dispatch_counts.append(len(dispatch_instructions))
                 
                 # Debug: Log node IDs being processed
                 unique_nodes = set(r.node_id for r in list(telemetry_buffer)[-20:])  # Last 20 records
@@ -239,18 +307,39 @@ async def broadcast_to_frontend(metrics: Dict[str, Any]):
     for client in disconnected:
         frontend_clients.remove(client)
 
+async def update_live_table():
+    """Update the live metrics table every second."""
+    global live_table
+    
+    # Disable logging to keep table clean
+    logging.getLogger().setLevel(logging.WARNING)
+    
+    with Live(create_metrics_table(), console=console, refresh_per_second=2) as live:
+        live_table = live
+        try:
+            while True:
+                live.update(create_metrics_table())
+                await asyncio.sleep(0.5)  # Update every 500ms
+        except asyncio.CancelledError:
+            pass
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup and shutdown events."""
-    # Start ESP32 connection task
+    # Start background tasks
     esp32_task = asyncio.create_task(connect_to_esp32())
-    logger.info("Griddy backend started - connecting to ESP32")
+    table_task = asyncio.create_task(update_live_table())
+    
+    console.print("\n🚀 [bold green]Griddy Backend Starting[/bold green]")
+    console.print("📡 Connecting to ESP32 hardware...")
+    console.print("📊 Live metrics table initializing...\n")
     
     yield
     
     # Cleanup
     esp32_task.cancel()
-    logger.info("Griddy backend shutting down")
+    table_task.cancel()
+    console.print("\n🛑 [bold red]Griddy backend shutting down[/bold red]")
 
 # FastAPI app
 app = FastAPI(
