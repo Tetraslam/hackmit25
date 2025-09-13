@@ -59,11 +59,11 @@ static const output_pin_map_t output_pins[NUM_OUTPUT_PINS] = {
 };
 
 static httpd_handle_t server_handle = NULL;
-static int ws_fd = -1;
+static int ws_out_fd = -1;
+static int ws_in_fd = -1;
 static TaskHandle_t data_task = NULL;
 static volatile bool should_send_data = false;
 static power_grid_data_t grid_data;
-// static char json_buffer[MAX_JSON_BUFFER];  // Unused with binary protocol
 static uint8_t ws_buffer[MAX_WS_BUFFER];
 static uint8_t binary_buffer[256];  // Buffer for binary protocol
 static ledc_channel_t node_to_channel[MAX_NODES] = {0};
@@ -190,50 +190,13 @@ static size_t generate_binary_telemetry(uint8_t *buffer, size_t buffer_size)
     return encode_telemetry(&packet, buffer);
 }
 
-// Keep JSON generation for fallback/debugging
-__attribute__((unused)) static int generate_json_data(char *buffer, size_t buffer_size)
-{
-    cJSON *root = cJSON_CreateObject();
-    cJSON *timestamp = cJSON_CreateNumber(grid_data.timestamp);
-    cJSON *nodes_array = cJSON_CreateArray();
-
-    cJSON_AddItemToObject(root, "timestamp", timestamp);
-    cJSON_AddItemToObject(root, "nodes", nodes_array);
-
-    for (int i = 0; i < grid_data.node_count; i++) {
-        power_node_t *node = &grid_data.nodes[i];
-        cJSON *node_obj = cJSON_CreateObject();
-
-        char demand_str[16], ff_str[16];
-        snprintf(demand_str, sizeof(demand_str), "%.4f", node->demand);
-        snprintf(ff_str, sizeof(ff_str), "%.4f", node->fulfillment);
-
-        cJSON_AddItemToObject(node_obj, "id", cJSON_CreateNumber(node->id));
-        cJSON_AddItemToObject(node_obj, "type", cJSON_CreateString(node->type));
-        cJSON_AddItemToObject(node_obj, "demand", cJSON_CreateNumber(atof(demand_str)));
-        cJSON_AddItemToObject(node_obj, "ff", cJSON_CreateNumber(atof(ff_str)));
-
-        cJSON_AddItemToArray(nodes_array, node_obj);
-    }
-
-    char *json_string = cJSON_PrintUnformatted(root);
-    if (json_string) {
-        int len = snprintf(buffer, buffer_size, "%s", json_string);
-        free(json_string);
-        cJSON_Delete(root);
-        return len;
-    }
-
-    cJSON_Delete(root);
-    return 0;
-}
 
 static void data_send_task(void *pvParameters)
 {
     vTaskDelay(pdMS_TO_TICKS(100)); // Give connection time to establish
 
     while (1) {
-        if (should_send_data && ws_fd >= 0 && server_handle) {
+        if (should_send_data && ws_out_fd >= 0 && server_handle) {
             update_dummy_data();
 
             // Use binary protocol for efficiency
@@ -247,12 +210,12 @@ static void data_send_task(void *pvParameters)
                     .len = binary_len
                 };
 
-                esp_err_t ret = httpd_ws_send_frame_async(server_handle, ws_fd, &ws_frame);
+                esp_err_t ret = httpd_ws_send_frame_async(server_handle, ws_out_fd, &ws_frame);
                 if (ret != ESP_OK) {
                     ESP_LOGE(POWER_GRID_TAG, "WebSocket send failed: %s", esp_err_to_name(ret));
                     if (ret == ESP_ERR_INVALID_ARG || ret == ESP_ERR_INVALID_STATE) {
-                        ESP_LOGI(POWER_GRID_TAG, "Connection lost, stopping data transmission");
-                        ws_fd = -1;
+                        ESP_LOGI(POWER_GRID_TAG, "Output connection lost, stopping data transmission");
+                        ws_out_fd = -1;
                         should_send_data = false;
                     }
                 } else {
@@ -268,12 +231,12 @@ static void data_send_task(void *pvParameters)
     }
 }
 
-static esp_err_t power_grid_ws_handler(httpd_req_t *req)
+static esp_err_t power_grid_ws_out_handler(httpd_req_t *req)
 {
     if (req->method == HTTP_GET) {
-        ESP_LOGI(POWER_GRID_TAG, "WebSocket handshake completed, starting data stream");
+        ESP_LOGI(POWER_GRID_TAG, "WebSocket /out handshake completed, starting data stream");
 
-        ws_fd = httpd_req_to_sockfd(req);
+        ws_out_fd = httpd_req_to_sockfd(req);
         should_send_data = true;
 
         if (data_task == NULL) {
@@ -289,84 +252,126 @@ static esp_err_t power_grid_ws_handler(httpd_req_t *req)
 
     esp_err_t ret = httpd_ws_recv_frame(req, &ws_pkt, 0);
     if (ret != ESP_OK) {
-        ESP_LOGW(POWER_GRID_TAG, "WebSocket recv failed: %s (socket_fd=%d)", esp_err_to_name(ret), httpd_req_to_sockfd(req));
-        ws_fd = -1;
-        should_send_data = false;
+        static int error_count = 0;
+        static int64_t last_error_time = 0;
+        int64_t now = esp_timer_get_time() / 1000;
+
+        error_count++;
+
+        if (now - last_error_time > 5000 || error_count >= 10) {
+            ESP_LOGW(POWER_GRID_TAG, "WebSocket /out recv errors: %d in last %.1fs, latest: %s",
+                    error_count, (now - last_error_time) / 1000.0f, esp_err_to_name(ret));
+            error_count = 0;
+            last_error_time = now;
+        }
+
+        if (ret == ESP_ERR_INVALID_STATE && error_count >= 10) {
+            ESP_LOGE(POWER_GRID_TAG, "Persistent WebSocket /out errors, disconnecting");
+            ws_out_fd = -1;
+            should_send_data = false;
+        }
+
         return ESP_OK;
     }
 
-    ESP_LOGD(POWER_GRID_TAG, "WebSocket frame: type=%d, len=%d, fin=%d", ws_pkt.type, ws_pkt.len, ws_pkt.final);
+    if (ws_pkt.len > 0 && ws_pkt.len < MAX_WS_BUFFER - 1) {
+        ws_pkt.payload = ws_buffer;
+        ret = httpd_ws_recv_frame(req, &ws_pkt, ws_pkt.len);
+
+        if (ret == ESP_OK && ws_pkt.type == HTTPD_WS_TYPE_CLOSE) {
+            ESP_LOGI(POWER_GRID_TAG, "WebSocket /out connection closed by client");
+            ws_out_fd = -1;
+            should_send_data = false;
+        }
+    }
+
+    return ESP_OK;
+}
+
+static esp_err_t power_grid_ws_in_handler(httpd_req_t *req)
+{
+    if (req->method == HTTP_GET) {
+        ESP_LOGI(POWER_GRID_TAG, "WebSocket /in handshake completed, ready for input");
+        ws_in_fd = httpd_req_to_sockfd(req);
+        return ESP_OK;
+    }
+
+    httpd_ws_frame_t ws_pkt;
+    memset(&ws_pkt, 0, sizeof(httpd_ws_frame_t));
+
+    esp_err_t ret = httpd_ws_recv_frame(req, &ws_pkt, 0);
+    if (ret != ESP_OK) {
+        static int error_count = 0;
+        static int64_t last_error_time = 0;
+        int64_t now = esp_timer_get_time() / 1000;
+
+        error_count++;
+
+        if (now - last_error_time > 5000 || error_count >= 10) {
+            ESP_LOGW(POWER_GRID_TAG, "WebSocket /in recv errors: %d in last %.1fs, latest: %s",
+                    error_count, (now - last_error_time) / 1000.0f, esp_err_to_name(ret));
+            error_count = 0;
+            last_error_time = now;
+        }
+
+        if (ret == ESP_ERR_INVALID_STATE && error_count >= 10) {
+            ESP_LOGE(POWER_GRID_TAG, "Persistent WebSocket /in errors, disconnecting");
+            ws_in_fd = -1;
+        }
+
+        return ESP_OK;
+    }
+
+    ESP_LOGD(POWER_GRID_TAG, "WebSocket /in frame: type=%d, len=%d, fin=%d", ws_pkt.type, ws_pkt.len, ws_pkt.final);
 
     if (ws_pkt.len > 0 && ws_pkt.len < MAX_WS_BUFFER - 1) {
         ws_pkt.payload = ws_buffer;
         ret = httpd_ws_recv_frame(req, &ws_pkt, ws_pkt.len);
 
         if (ret == ESP_OK) {
-                if (ws_pkt.type == HTTPD_WS_TYPE_CLOSE) {
-                    ESP_LOGI(POWER_GRID_TAG, "WebSocket connection closed by client");
-                    ws_fd = -1;
-                    should_send_data = false;
-                } else if (ws_pkt.type == HTTPD_WS_TYPE_BINARY) {
-                    // Binary dispatch protocol
-                    dispatch_packet_t dispatch_packet;
-                    if (decode_dispatch(ws_buffer, ws_pkt.len, &dispatch_packet)) {
-                        for (int i = 0; i < dispatch_packet.node_count; i++) {
-                            dispatch_node_t *node = &dispatch_packet.nodes[i];
-                            set_output_pwm(node->id, node->supply);
-                            
-                            // Log occasionally for debugging
-                            static int log_counter = 0;
-                            if (++log_counter % 240 == 0) {  // Every 10 seconds
-                                ESP_LOGI(POWER_GRID_TAG, "Binary dispatch: node %d gets %.3f supply from source %d",
-                                        node->id, node->supply, node->source);
-                            }
+            if (ws_pkt.type == HTTPD_WS_TYPE_CLOSE) {
+                ESP_LOGI(POWER_GRID_TAG, "WebSocket /in connection closed by client");
+                ws_in_fd = -1;
+            } else if (ws_pkt.type == HTTPD_WS_TYPE_BINARY) {
+                // Binary dispatch protocol
+                dispatch_packet_t dispatch_packet;
+                if (decode_dispatch(ws_buffer, ws_pkt.len, &dispatch_packet)) {
+                    for (int i = 0; i < dispatch_packet.node_count; i++) {
+                        dispatch_node_t *node = &dispatch_packet.nodes[i];
+                        set_output_pwm(node->id, node->supply);
+
+                        // Log occasionally for debugging
+                        static int log_counter = 0;
+                        if (++log_counter % 240 == 0) {  // Every 10 seconds
+                            ESP_LOGI(POWER_GRID_TAG, "Binary dispatch: node %d gets %.3f supply from source %d",
+                                    node->id, node->supply, node->source);
                         }
-                    } else {
-                        ESP_LOGW(POWER_GRID_TAG, "Invalid binary dispatch received (%d bytes)", ws_pkt.len);
                     }
-                } else if (ws_pkt.type == HTTPD_WS_TYPE_TEXT) {
-                    // Legacy JSON protocol for backward compatibility
-                    ws_buffer[ws_pkt.len] = '\0';
-
-                    cJSON *json = cJSON_Parse((char *)ws_buffer);
-                    if (json) {
-                        cJSON *nodes = cJSON_GetObjectItem(json, "nodes");
-                        if (cJSON_IsArray(nodes)) {
-                            int array_size = cJSON_GetArraySize(nodes);
-                            for (int i = 0; i < array_size; i++) {
-                                cJSON *node = cJSON_GetArrayItem(nodes, i);
-                                if (node) {
-                                    cJSON *id = cJSON_GetObjectItem(node, "id");
-                                    cJSON *supply = cJSON_GetObjectItem(node, "supply");
-                                    cJSON *source = cJSON_GetObjectItem(node, "source");
-
-                                    if (cJSON_IsNumber(id) && cJSON_IsNumber(supply) && cJSON_IsNumber(source)) {
-                                        int node_id = (int)cJSON_GetNumberValue(id);
-                                        float supply_val = (float)cJSON_GetNumberValue(supply);
-                                        int source_id = (int)cJSON_GetNumberValue(source);
-
-                                        ESP_LOGI(POWER_GRID_TAG, "JSON fallback: node %d gets %.3f supply from source %d",
-                                                node_id, supply_val, source_id);
-                                        set_output_pwm(node_id, supply_val);
-                                    }
-                                }
-                            }
-                        }
-                        cJSON_Delete(json);
-                    } else {
-                        ESP_LOGW(POWER_GRID_TAG, "Invalid JSON received");
-                    }
+                } else {
+                    ESP_LOGW(POWER_GRID_TAG, "Invalid binary dispatch received (%d bytes)", ws_pkt.len);
                 }
+            } else if (ws_pkt.type == HTTPD_WS_TYPE_TEXT) {
+                // JSON protocol removed - binary only
+                ESP_LOGW(POWER_GRID_TAG, "Text/JSON messages not supported - use binary protocol only");
             }
+        }
     }
 
     return ESP_OK;
 }
 
-static const httpd_uri_t power_grid_ws_uri = {
-    .uri = "/ws",
+static const httpd_uri_t power_grid_ws_out_uri = {
+    .uri = "/out",
     .method = HTTP_GET,
-    .handler = power_grid_ws_handler,
+    .handler = power_grid_ws_out_handler,
+    .user_ctx = NULL,
+    .is_websocket = true
+};
+
+static const httpd_uri_t power_grid_ws_in_uri = {
+    .uri = "/in",
+    .method = HTTP_GET,
+    .handler = power_grid_ws_in_handler,
     .user_ctx = NULL,
     .is_websocket = true
 };
@@ -377,17 +382,24 @@ esp_err_t register_power_grid_handler(httpd_handle_t server)
     init_dummy_nodes();
     ESP_LOGI(POWER_GRID_TAG, "Initialized %d power grid nodes", grid_data.node_count);
 
-    esp_err_t ret = httpd_register_uri_handler(server, &power_grid_ws_uri);
-    if (ret == ESP_OK) {
-        ESP_LOGI(POWER_GRID_TAG, "Power grid WebSocket handler registered at /ws");
+    esp_err_t ret1 = httpd_register_uri_handler(server, &power_grid_ws_out_uri);
+    esp_err_t ret2 = httpd_register_uri_handler(server, &power_grid_ws_in_uri);
+
+    if (ret1 == ESP_OK && ret2 == ESP_OK) {
+        ESP_LOGI(POWER_GRID_TAG, "Power grid WebSocket handlers registered at /out and /in");
+        return ESP_OK;
+    } else {
+        ESP_LOGE(POWER_GRID_TAG, "Failed to register WebSocket handlers: /out=%s, /in=%s",
+                esp_err_to_name(ret1), esp_err_to_name(ret2));
+        return (ret1 != ESP_OK) ? ret1 : ret2;
     }
-    return ret;
 }
 
 void power_grid_cleanup(void)
 {
     should_send_data = false;
-    ws_fd = -1;
+    ws_out_fd = -1;
+    ws_in_fd = -1;
     server_handle = NULL;
     if (data_task) {
         vTaskDelete(data_task);
@@ -433,6 +445,13 @@ static httpd_handle_t start_webserver(void)
     httpd_handle_t server = NULL;
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
 
+    // Increase timeout and buffer sizes for better WebSocket compatibility
+    config.recv_wait_timeout = 10;
+    config.send_wait_timeout = 10;
+    config.max_resp_headers = 16;
+    config.max_uri_handlers = 16;
+    config.stack_size = 8192;  // Increase stack size for WebSocket handling
+
     if (httpd_start(&server, &config) == ESP_OK) {
         register_power_grid_handler(server);
         return server;
@@ -458,7 +477,7 @@ void app_main(void)
 
     httpd_handle_t server = start_webserver();
     if (server) {
-        ESP_LOGI(POWER_GRID_TAG, "WebSocket server started on /ws");
+        ESP_LOGI(POWER_GRID_TAG, "WebSocket server started on /out and /in");
     }
 
     while (1) {
