@@ -9,4 +9,6 @@ dependencies = [
     "numpy>=2.3.3",
     "scipy>=1.16.2",
     "pulp>=2.7.0",
+    "asyncio>=4.0.0",
+    "websockets>=15.0.1",
 ]
