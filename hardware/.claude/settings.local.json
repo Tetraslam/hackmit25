@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//c/Users/willi/Documents/coding/hackmit25/**)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

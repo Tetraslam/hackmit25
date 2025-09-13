@@ -289,11 +289,13 @@ static esp_err_t power_grid_ws_handler(httpd_req_t *req)
 
     esp_err_t ret = httpd_ws_recv_frame(req, &ws_pkt, 0);
     if (ret != ESP_OK) {
-        ESP_LOGI(POWER_GRID_TAG, "WebSocket connection closed");
+        ESP_LOGW(POWER_GRID_TAG, "WebSocket recv failed: %s (socket_fd=%d)", esp_err_to_name(ret), httpd_req_to_sockfd(req));
         ws_fd = -1;
         should_send_data = false;
         return ESP_OK;
     }
+
+    ESP_LOGD(POWER_GRID_TAG, "WebSocket frame: type=%d, len=%d, fin=%d", ws_pkt.type, ws_pkt.len, ws_pkt.final);
 
     if (ws_pkt.len > 0 && ws_pkt.len < MAX_WS_BUFFER - 1) {
         ws_pkt.payload = ws_buffer;

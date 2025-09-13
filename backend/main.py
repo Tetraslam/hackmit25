@@ -170,7 +170,20 @@ async def connect_to_esp32():
             uri = f"ws://{esp_ip}/ws"
             logger.info(f"Connecting to ESP32 at {uri}")
             
-            async with websockets.connect(uri) as websocket:
+            # ESP32 requires proper WebSocket client masking and headers
+            headers = {
+                "User-Agent": "Griddy-Backend/1.0",
+                "Sec-WebSocket-Protocol": "binary"
+            }
+            async with websockets.connect(
+                uri,
+                extra_headers=headers,
+                ping_interval=None,  # Disable ping/pong to reduce overhead
+                ping_timeout=None,
+                close_timeout=1.0,
+                max_size=2**16,  # 64KB max message size
+                compression=None  # Disable compression for speed
+            ) as websocket:
                 hardware_websocket = websocket
                 logger.info("Connected to ESP32 hardware")
                 
