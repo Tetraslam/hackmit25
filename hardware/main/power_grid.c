@@ -63,7 +63,7 @@ static int ws_fd = -1;
 static TaskHandle_t data_task = NULL;
 static volatile bool should_send_data = false;
 static power_grid_data_t grid_data;
-static char json_buffer[MAX_JSON_BUFFER];
+// static char json_buffer[MAX_JSON_BUFFER];  // Unused with binary protocol
 static uint8_t ws_buffer[MAX_WS_BUFFER];
 static uint8_t binary_buffer[256];  // Buffer for binary protocol
 static ledc_channel_t node_to_channel[MAX_NODES] = {0};
@@ -191,7 +191,7 @@ static size_t generate_binary_telemetry(uint8_t *buffer, size_t buffer_size)
 }
 
 // Keep JSON generation for fallback/debugging
-static int generate_json_data(char *buffer, size_t buffer_size)
+__attribute__((unused)) static int generate_json_data(char *buffer, size_t buffer_size)
 {
     cJSON *root = cJSON_CreateObject();
     cJSON *timestamp = cJSON_CreateNumber(grid_data.timestamp);
