@@ -1,11 +1,12 @@
 [project]
 name = "backend"
 version = "0.1.0"
-description = "Add your description here"
+description = "Microgrid optimization with MILP and Fourier forecasting"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "matplotlib>=3.10.6",
     "numpy>=2.3.3",
     "scipy>=1.16.2",
+    "pulp>=2.7.0",
 ]
