@@ -1,5 +1,6 @@
 #include "binary_protocol.h"
 #include <string.h>
+#include <stdbool.h>
 
 size_t encode_telemetry(const telemetry_packet_t *packet, uint8_t *buffer)
 {
