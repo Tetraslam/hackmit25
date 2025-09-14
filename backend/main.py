@@ -57,6 +57,9 @@ telemetry_buffer = deque(maxlen=1000)  # Store last 1000 readings
 latest_metrics: Dict[str, Any] = {}
 confidence_scores = deque(maxlen=100)
 
+# Cumulative cost tracking
+cumulative_cost = 0.0
+
 # Initialize Cerebras AI agent
 cerebras_agent = create_cerebras_agent()
 cerebras_escalations = deque(maxlen=50)  # Track AI escalation frequency
@@ -435,41 +438,47 @@ async def process_hardware_telemetry(data: Dict[str, Any]):
                 efficiency = (total_supply / max(total_demand, 0.1)) * 100 if total_demand > 0 else 100
                 green_percentage = (green_energy_amps / max(total_supply, 0.1)) * 100 if total_supply > 0 else 0
                 
+                # Update cumulative cost
+                global cumulative_cost
+                cumulative_cost += total_cost
+                
                 # Update metrics for frontend
                 latest_metrics = {
-                    "timestamp": int(timestamp * 1000),
-                    "nodes": [
-                        {
-                            "id": int(record.node_id),  # Convert string back to int for frontend
-                            "type": "consumer",
-                            "demand": record.demand_amps,
-                            "fulfillment": record.fulfillment
-                        }
-                        for record in records
-                    ] + [
-                        {
-                            "id": 999,  # Use a high ID for the power source to avoid conflicts
-                            "type": "power", 
-                            "demand": 0.0,
-                            "fulfillment": total_supply
-                        }
-                    ],
-                    "optimization_time_ms": opt_time,
-                    "confidence_score": confidence,
-                    "dispatch_count": len(dispatch_instructions),
-                    # Economic data from real optimization
-                    "economic": {
-                        "total_cost_per_second": total_cost,
-                        "cost_per_amp": total_cost / max(total_supply, 0.1) if total_supply > 0 else 0,
-                        "total_demand": total_demand,
-                        "total_supply": total_supply,
-                        "unmet_demand": unmet_demand,
-                        "efficiency_percent": efficiency,
-                        "green_energy_percent": green_percentage,
-                        "source_usage": source_usage,
-                        "dispatch_details": dispatch_instructions
-                    }
-                }
+                     "timestamp": int(timestamp * 1000),
+                     "nodes": [
+                         {
+                             "id": int(record.node_id),  # Convert string back to int for frontend
+                             "type": "consumer",
+                             "demand": record.demand_amps,
+                             "fulfillment": record.fulfillment
+                         }
+                         for record in records
+                     ] + [
+                         {
+                             "id": 999,  # Use a high ID for the power source to avoid conflicts
+                             "type": "power", 
+                             "demand": 0.0,
+                             "fulfillment": total_supply
+                         }
+                     ],
+                     "optimization_time_ms": opt_time,
+                     "confidence_score": confidence,
+                     "dispatch_count": len(dispatch_instructions),
+                     # Economic data from real optimization
+                     "economic": {
+                         "total_cost": cumulative_cost,  # Cumulative total cost
+                         "cycle_cost": total_cost,  # Cost for this optimization cycle
+                         "cost_per_second": total_cost,  # Cost per second (for rate calculations)
+                         "cost_per_amp": total_cost / max(total_supply, 0.1) if total_supply > 0 else 0,
+                         "total_demand": total_demand,
+                         "total_supply": total_supply,
+                         "unmet_demand": unmet_demand,
+                         "efficiency_percent": efficiency,
+                         "green_energy_percent": green_percentage,
+                         "source_usage": source_usage,
+                         "dispatch_details": dispatch_instructions
+                     }
+                 }
                 
                 # Broadcast to frontend clients
                 await broadcast_to_frontend(latest_metrics)
@@ -614,24 +623,26 @@ async def get_metrics():
     """Get latest metrics for frontend dashboard."""
     if not latest_metrics:
         # Return empty state if no data yet
-        return {
-            "timestamp": int(time.time() * 1000),
-            "nodes": [],
-            "optimization_time_ms": 0,
-            "confidence_score": 0.0,
-            "dispatch_count": 0,
-            "economic": {
-                "total_cost_per_second": 0.0,
-                "cost_per_amp": 0.0,
-                "total_demand": 0.0,
-                "total_supply": 0.0,
-                "unmet_demand": 0.0,
-                "efficiency_percent": 100.0,
-                "green_energy_percent": 0.0,
-                "source_usage": {},
-                "dispatch_details": []
-            }
-        }
+         return {
+             "timestamp": int(time.time() * 1000),
+             "nodes": [],
+             "optimization_time_ms": 0,
+             "confidence_score": 0.0,
+             "dispatch_count": 0,
+             "economic": {
+                 "total_cost": 0.0,
+                 "cycle_cost": 0.0,
+                 "cost_per_second": 0.0,
+                 "cost_per_amp": 0.0,
+                 "total_demand": 0.0,
+                 "total_supply": 0.0,
+                 "unmet_demand": 0.0,
+                 "efficiency_percent": 100.0,
+                 "green_energy_percent": 0.0,
+                 "source_usage": {},
+                 "dispatch_details": []
+             }
+         }
     
     return latest_metrics
 

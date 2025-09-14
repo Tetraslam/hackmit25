@@ -1,0 +1,19 @@
+[project]
+name = "backend"
+version = "0.1.0"
+description = "Microgrid optimization with MILP and Fourier forecasting"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "matplotlib>=3.10.6",
+    "numpy>=2.3.3",
+    "scipy>=1.16.2",
+    "pulp>=2.7.0",
+    "asyncio>=4.0.0",
+    "websockets>=15.0.1",
+    "fastapi>=0.116.1",
+    "uvicorn>=0.35.0",
+    "httpx>=0.28.1",
+    "rich>=14.1.0",
+    "requests>=2.32.5",
+]

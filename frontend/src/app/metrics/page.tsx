@@ -9,7 +9,9 @@ import { Separator } from "@/components/ui/separator"
 import { Badge } from "@/components/ui/badge"
 import { Progress } from "@/components/ui/progress"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
-import { Activity, Zap, Brain, Clock, Wifi, AlertTriangle } from "lucide-react"
+import { Activity, Zap, Brain, Clock, Wifi, AlertTriangle, DollarSign } from "lucide-react"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { EconomicInsights } from "@/components/economic-insights"
 
 type NodeReading = {
   id: number
@@ -24,6 +26,26 @@ type Snapshot = {
   optimization_time_ms?: number
   confidence_score?: number
   dispatch_count?: number
+  economic?: {
+    total_cost_per_second: number
+    cost_per_amp: number
+    total_demand: number
+    total_supply: number
+    unmet_demand: number
+    efficiency_percent: number
+    green_energy_percent: number
+    source_usage: Record<string, {
+      amps: number
+      cost: number
+      cost_per_amp: number
+      max_capacity: number
+    }>
+    dispatch_details: Array<{
+      id: string
+      supply_amps: number
+      source_id: string
+    }>
+  }
 }
 
 const POLL_MS = 2000
@@ -114,7 +136,7 @@ export default function MetricsPage() {
       <div className="flex items-center justify-between mb-8">
         <div>
           <h1 className="text-3xl font-bold tracking-tight">Griddy Dashboard</h1>
-          <p className="text-muted-foreground">ESP32 hardware telemetry → MILP optimization → dispatch commands (24Hz)</p>
+          <p className="text-muted-foreground">Real-time microgrid optimization with economic insights</p>
         </div>
         <div className="flex items-center gap-4">
           <div className="flex items-center gap-2">
@@ -146,8 +168,17 @@ export default function MetricsPage() {
         </Alert>
       )}
 
-      {/* System Overview Cards */}
-      <div className="grid gap-4 md:grid-cols-4 mb-8">
+      {/* Tabbed Interface */}
+      <Tabs defaultValue="technical" className="space-y-6">
+        <TabsList className="grid w-full max-w-md grid-cols-2">
+          <TabsTrigger value="technical">Technical Metrics</TabsTrigger>
+          <TabsTrigger value="economic">Economic Insights</TabsTrigger>
+        </TabsList>
+
+        {/* Technical Metrics Tab */}
+        <TabsContent value="technical" className="space-y-6">
+          {/* System Overview Cards */}
+          <div className="grid gap-4 md:grid-cols-4">
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium">Total Demand</CardTitle>
@@ -557,6 +588,13 @@ export default function MetricsPage() {
           </CardContent>
         </Card>
       </div>
+        </TabsContent>
+
+        {/* Economic Insights Tab */}
+        <TabsContent value="economic" className="space-y-6">
+          <EconomicInsights history={history} latest={latest} />
+        </TabsContent>
+      </Tabs>
     </main>
   )
 }
