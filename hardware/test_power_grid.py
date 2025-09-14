@@ -19,8 +19,8 @@ USE_SLOW_MODE = True  # Set to False to revert to fast mode (24Hz)
 ENABLE_LOGGING = False # Set to True to enable detailed logs
 ENABLE_SENDING = True  # Set to False to disable sending (receive only)
 
-SLOW_INTERVAL = 0.5  # 0.5 second intervals (2Hz)
-FAST_INTERVAL = 1/24   # 24Hz intervals (~41.67ms)
+SLOW_INTERVAL = 0.5  # 0.5 second intervals (2Hz for /in)
+FAST_INTERVAL = 1/24   # 24Hz intervals (~41.67ms for /out)
 
 
 def log(message):
@@ -30,9 +30,9 @@ def log(message):
 
 
 async def test_out_endpoint_only(esp_ip):
-    """Test only the /out endpoint to receive telemetry data."""
+    """Test /out endpoint to receive telemetry data at 24Hz."""
     out_uri = f"ws://{esp_ip}/out"
-    log(f"\n--- Testing /out endpoint only ---")
+    log(f"\n--- Testing /out endpoint (24Hz receive) ---")
     log(f"Connecting to: {out_uri}")
 
     try:
@@ -40,22 +40,48 @@ async def test_out_endpoint_only(esp_ip):
         async with websockets.connect(out_uri) as websocket:
             log("✓ Connected to ESP32 /out endpoint")
 
-            # Just receive telemetry data
-            log("Waiting for telemetry data...")
-            data = await websocket.recv()
-
-            if isinstance(data, bytes):
-                packet = BinaryProtocol.decode_telemetry(data)
-                if packet:
-                    log(f"✓ Received binary telemetry: {len(data)} bytes")
-                    log(f"  Timestamp: {packet.timestamp}")
-                    for node in packet.nodes:
-                        node_type = "consumer" if node.type == 1 else "power"
-                        log(f"  Node {node.id} ({node_type}): demand={node.demand:.2f}A, ff={node.fulfillment:.1f}%")
-                else:
-                    log(f"✗ Invalid binary data: {len(data)} bytes")
-            else:
-                log(f"✗ Received text data (unexpected): {data}")
+            # Receive telemetry data for 5 seconds at 24Hz
+            test_duration = 5.0
+            log(f"Receiving telemetry for {test_duration}s at 24Hz...")
+            
+            start_time = time.time()
+            receive_count = 0
+            
+            try:
+                while True:
+                    elapsed = time.time() - start_time
+                    if elapsed >= test_duration:
+                        log(f"\n✓ Receive test completed after {test_duration}s")
+                        break
+                    
+                    # Set a timeout for receiving
+                    try:
+                        data = await asyncio.wait_for(websocket.recv(), timeout=0.1)
+                        receive_count += 1
+                        
+                        if isinstance(data, bytes):
+                            packet = BinaryProtocol.decode_telemetry(data)
+                            if packet:
+                                log(f"[{elapsed:4.1f}s] Received #{receive_count}: {len(data)} bytes, ts={packet.timestamp}")
+                                for node in packet.nodes:
+                                    node_type = "consumer" if node.type == 1 else "power"
+                                    log(f"  Node {node.id} ({node_type}): demand={node.demand:.2f}A, ff={node.fulfillment:.1f}%")
+                            else:
+                                log(f"✗ Invalid binary data: {len(data)} bytes")
+                        else:
+                            log(f"✗ Received text data: {data}")
+                            
+                    except asyncio.TimeoutError:
+                        # No data received in timeout period, continue
+                        continue
+                        
+            except KeyboardInterrupt:
+                log(f"\n✓ Stopped after receiving {receive_count} messages")
+            
+            log(f"Total messages received: {receive_count}")
+            if elapsed > 0:
+                rate = receive_count / elapsed
+                log(f"Average receive rate: {rate:.1f} msg/s")
 
     except Exception as e:
         log(f"✗ Error testing /out endpoint: {e}")
@@ -140,8 +166,8 @@ async def test_power_grid():
     log_status = "ON" if ENABLE_LOGGING else "OFF"
     
     print(f"=== Power Grid Test ===")
-    print(f"Mode: {mode_name} | Sending: {send_status} | Logs: {log_status}")
-    print(f"Duration: 10s | Supply: 0.1↔1.0A toggle (0.5s intervals)")
+    print(f"Send (/in): 2Hz | Receive (/out): 24Hz | Logs: {log_status}")
+    print(f"Duration: /out=5s, /in=10s | Supply: 0.1↔1.0A toggle (0.5s intervals)")
     print(f"Toggles: USE_SLOW_MODE={USE_SLOW_MODE}, ENABLE_SENDING={ENABLE_SENDING}, ENABLE_LOGGING={ENABLE_LOGGING}")
     
     # Get ESP IP
@@ -150,7 +176,7 @@ async def test_power_grid():
     print(f"ESP32 IP: {esp_ip}")
 
     # Skip /out endpoint test for now (receive at 24Hz later)
-    # await test_out_endpoint_only(esp_ip)
+    await test_out_endpoint_only(esp_ip)
 
     # Test /in endpoint with sending only (2Hz)
     await test_in_endpoint_with_simple_connect(esp_ip)
