@@ -525,17 +525,7 @@ export default function MetricsPage() {
               </p>
             </div>
 
-            {/* Protocol Efficiency */}
-            <div>
-              <div className="flex justify-between text-sm mb-2">
-                <span>Protocol Efficiency</span>
-                <span className="font-mono text-green-600">58%</span>
-              </div>
-              <Progress value={58} className="h-2" />
-              <p className="text-xs text-muted-foreground mt-1">
-                Binary vs JSON bandwidth savings
-              </p>
-            </div>
+            {/* Protocol Efficiency – removed per request */}
 
             {/* Supply vs Demand Balance */}
             {latest && (

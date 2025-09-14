@@ -321,7 +321,11 @@ async def process_hardware_telemetry(data: Dict[str, Any]):
                 
                 # Check if we need Cerebras escalation
                 if confidence < 0.5 and cerebras_agent:  # Low confidence threshold
-                    logger.info(f"Low confidence ({confidence:.2f}), escalating to Cerebras AI")
+                    logger.info(
+                        f"Low confidence ({confidence:.2f}) → escalating to Cerebras AI | "
+                        f"records={len(records)}, total_demand={sum(r.demand_amps for r in records):.2f}A, "
+                        f"opt_time={opt_time:.1f}ms"
+                    )
                     try:
                         # Convert records to Cerebras format
                         sensor_readings = []
@@ -345,6 +349,10 @@ async def process_hardware_telemetry(data: Dict[str, Any]):
                         
                         # Get AI decision
                         ai_start = time.time()
+                        logger.info(
+                            "Cerebras request → nodes=%d, sources=%d, opt_time=%.1fms, milp_conf=%.2f",
+                            len(sensor_readings), len(source_info), opt_time, confidence,
+                        )
                         ai_response = await cerebras_agent.make_dispatch_decision(
                             sensor_readings=sensor_readings,
                             energy_sources=source_info,
@@ -370,9 +378,14 @@ async def process_hardware_telemetry(data: Dict[str, Any]):
                         # Track escalation
                         cerebras_escalations.append(time.time())
                         
-                        logger.info(f"Cerebras AI decision: {len(dispatch_instructions)} commands, "
-                                  f"confidence={confidence:.2f}, time={ai_time:.1f}ms")
-                        logger.info(f"AI reasoning: {ai_response.reasoning}")
+                        logger.info(
+                            "Cerebras AI decision: %d commands, ai_conf=%.2f, time=%.1fms",
+                            len(dispatch_instructions), confidence, ai_time,
+                        )
+                        for d in dispatch_instructions[:10]:
+                            logger.info("  - node %s ← %.3f A from %s", d["id"], d["supply_amps"], d["source_id"])
+                        if getattr(ai_response, "reasoning", None):
+                            logger.info("AI reasoning: %s", ai_response.reasoning)
                         
                     except Exception as e:
                         logger.error(f"Cerebras escalation failed: {e}")
@@ -540,20 +553,13 @@ async def broadcast_to_frontend(metrics: Dict[str, Any]):
         frontend_clients.remove(client)
 
 async def update_live_table():
-    """Update the live metrics table every second."""
-    global live_table
-    
-    # Temporarily keep INFO logging to debug
-    # logging.getLogger().setLevel(logging.WARNING)
-    
-    with Live(create_metrics_table(), console=console, refresh_per_second=2) as live:
-        live_table = live
-        try:
-            while True:
-                live.update(create_metrics_table())
-                await asyncio.sleep(0.5)  # Update every 500ms
-        except asyncio.CancelledError:
-            pass
+    """Print periodic metrics snapshots instead of in-place updates."""
+    try:
+        while True:
+            console.print(create_metrics_table())
+            await asyncio.sleep(2.0)
+    except asyncio.CancelledError:
+        pass
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
