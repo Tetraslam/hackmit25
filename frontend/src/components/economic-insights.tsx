@@ -9,38 +9,20 @@ import {
   TrendingUp, 
   TrendingDown, 
   Battery, 
-  Sun, 
-  Wind,
-  Zap,
-  AlertTriangle
+  Sun
 } from "lucide-react"
 import { 
   LineChart, 
   Line, 
   AreaChart, 
   Area,
-  BarChart, 
-  Bar,
   XAxis, 
   YAxis, 
   CartesianGrid, 
   Tooltip, 
-  ResponsiveContainer,
-  PieChart,
-  Pie,
-  Cell,
-  Legend
+  ResponsiveContainer
 } from "recharts"
 
-// Map backend source IDs to display info (matching actual backend sources)
-const SOURCE_INFO = {
-  SOLAR_001: { name: "Solar Array", color: "#fbbf24", icon: Sun },
-  BATTERY_001: { name: "Battery Storage", color: "#10b981", icon: Battery },
-  GAS_GEN_001: { name: "Natural Gas", color: "#6366f1", icon: Zap },
-  GRID_001: { name: "Grid Connection", color: "#8b5cf6", icon: Zap },
-  WIND_001: { name: "Wind Turbine", color: "#06b6d4", icon: Wind },
-  DIESEL_001: { name: "Diesel Backup", color: "#ef4444", icon: AlertTriangle },
-}
 
 type Snapshot = {
   timestamp: number
@@ -125,20 +107,6 @@ export function EconomicInsights({ history, latest }: EconomicInsightsProps) {
     })
   }, [history])
   
-  // Calculate source distribution for pie chart from real backend data
-  const sourceDistribution = useMemo(() => {
-    if (!latest?.economic?.source_usage) return []
-    
-    return Object.entries(latest.economic.source_usage)
-      .filter(([_, usage]) => usage.amps > 0)
-      .map(([sourceId, usage]) => ({
-        name: SOURCE_INFO[sourceId as keyof typeof SOURCE_INFO]?.name || sourceId,
-        value: usage.amps,
-        cost: usage.cost,
-        costPerAmp: usage.cost_per_amp,
-        color: SOURCE_INFO[sourceId as keyof typeof SOURCE_INFO]?.color || "#6b7280"
-      }))
-  }, [latest])
   
   // Calculate cost trends from real data
   const costTrends = useMemo(() => {
@@ -234,20 +202,24 @@ export function EconomicInsights({ history, latest }: EconomicInsightsProps) {
         </Card>
       </div>
       
-      {/* Cost Analysis Charts */}
-      <div className="grid gap-6 lg:grid-cols-2">
-        {/* Cost Over Time */}
+      {/* Real-Time Cost Analysis */}
+      <div className="grid gap-6">
+        {/* Money Saved/Spent Over Time */}
         <Card>
           <CardHeader>
-            <CardTitle>Energy Cost Analysis</CardTitle>
-            <CardDescription>Real-time cost optimization ($/second)</CardDescription>
+            <CardTitle>Real-Time Cost Tracking</CardTitle>
+            <CardDescription>MILP optimization cost performance ($/second)</CardDescription>
           </CardHeader>
           <CardContent>
-            <div className="h-[300px]">
+            <div className="h-[400px]">
               <ResponsiveContainer width="100%" height="100%">
                 <AreaChart data={economicData} margin={{ top: 10, right: 10, left: 10, bottom: 10 }}>
                   <defs>
                     <linearGradient id="costGradient" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="#ef4444" stopOpacity={0.3}/>
+                      <stop offset="95%" stopColor="#ef4444" stopOpacity={0.1}/>
+                    </linearGradient>
+                    <linearGradient id="savingsGradient" x1="0" y1="0" x2="0" y2="1">
                       <stop offset="5%" stopColor="#10b981" stopOpacity={0.3}/>
                       <stop offset="95%" stopColor="#10b981" stopOpacity={0.1}/>
                     </linearGradient>
@@ -263,19 +235,26 @@ export function EconomicInsights({ history, latest }: EconomicInsightsProps) {
                     className="text-xs"
                     tickLine={false}
                     axisLine={false}
-                    width={40}
+                    width={50}
                   />
                   <Tooltip 
                     content={({ active, payload, label }) => {
                       if (active && payload && payload.length) {
+                        const data = payload[0].payload
                         return (
                           <div className="bg-background border rounded-lg p-3 shadow-lg">
                             <p className="font-medium">{label}</p>
-                            <p className="text-sm text-green-600">
-                              Cost: ${payload[0].value}/s
+                            <p className="text-sm text-red-600">
+                              Cost: ${data.totalCost}/s
+                            </p>
+                            <p className="text-sm text-blue-600">
+                              Cost/Amp: ${data.costPerAmp}/A
                             </p>
                             <p className="text-xs text-muted-foreground">
-                              Demand: {payload[0].payload.demand}A
+                              Demand: {data.demand}A | Supply: {data.supply}A
+                            </p>
+                            <p className="text-xs text-muted-foreground">
+                              Efficiency: {data.efficiency}%
                             </p>
                           </div>
                         )
@@ -286,9 +265,10 @@ export function EconomicInsights({ history, latest }: EconomicInsightsProps) {
                   <Area
                     type="monotone"
                     dataKey="totalCost"
-                    stroke="#10b981"
+                    stroke="#ef4444"
                     fill="url(#costGradient)"
                     strokeWidth={2}
+                    name="Total Cost"
                   />
                 </AreaChart>
               </ResponsiveContainer>
@@ -296,94 +276,140 @@ export function EconomicInsights({ history, latest }: EconomicInsightsProps) {
           </CardContent>
         </Card>
         
-        {/* Source Distribution */}
+        {/* Cost Efficiency Metrics */}
         <Card>
           <CardHeader>
-            <CardTitle>Energy Source Mix</CardTitle>
-            <CardDescription>Current dispatch by source (Amps)</CardDescription>
+            <CardTitle>Optimization Performance</CardTitle>
+            <CardDescription>Cost per amp and system efficiency over time</CardDescription>
           </CardHeader>
           <CardContent>
             <div className="h-[300px]">
               <ResponsiveContainer width="100%" height="100%">
-                <PieChart>
-                  <Pie
-                    data={sourceDistribution}
-                    cx="50%"
-                    cy="50%"
-                    labelLine={false}
-                    label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
-                    outerRadius={80}
-                    fill="#8884d8"
-                    dataKey="value"
-                  >
-                    {sourceDistribution.map((entry, index) => (
-                      <Cell key={`cell-${index}`} fill={entry.color} />
-                    ))}
-                  </Pie>
+                <LineChart data={economicData} margin={{ top: 10, right: 10, left: 10, bottom: 10 }}>
+                  <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
+                  <XAxis 
+                    dataKey="time" 
+                    className="text-xs"
+                    tickLine={false}
+                    axisLine={false}
+                  />
+                  <YAxis 
+                    yAxisId="left"
+                    className="text-xs"
+                    tickLine={false}
+                    axisLine={false}
+                    width={40}
+                  />
+                  <YAxis 
+                    yAxisId="right"
+                    orientation="right"
+                    className="text-xs"
+                    tickLine={false}
+                    axisLine={false}
+                    width={40}
+                    domain={[0, 100]}
+                  />
                   <Tooltip 
-                    content={({ active, payload }) => {
+                    content={({ active, payload, label }) => {
                       if (active && payload && payload.length) {
-                        const data = payload[0].payload
                         return (
                           <div className="bg-background border rounded-lg p-3 shadow-lg">
-                            <p className="font-medium">{data.name}</p>
-                            <p className="text-sm">Supply: {data.value.toFixed(1)}A</p>
-                            <p className="text-sm">Cost: ${data.cost.toFixed(2)}/s</p>
+                            <p className="font-medium">{label}</p>
+                            {payload.map((entry, index) => (
+                              <p key={index} className="text-sm" style={{ color: entry.color }}>
+                                {entry.name}: {entry.value}{entry.dataKey === 'efficiency' ? '%' : '/A'}
+                              </p>
+                            ))}
                           </div>
                         )
                       }
                       return null
                     }}
                   />
-                </PieChart>
+                  <Line
+                    yAxisId="left"
+                    type="monotone"
+                    dataKey="costPerAmp"
+                    stroke="#6366f1"
+                    strokeWidth={2}
+                    dot={false}
+                    name="Cost per Amp ($)"
+                  />
+                  <Line
+                    yAxisId="right"
+                    type="monotone"
+                    dataKey="efficiency"
+                    stroke="#10b981"
+                    strokeWidth={2}
+                    dot={false}
+                    name="Efficiency"
+                  />
+                </LineChart>
               </ResponsiveContainer>
             </div>
           </CardContent>
         </Card>
       </div>
       
-      {/* Source Priority List */}
+      {/* Cost Savings Summary */}
       <Card>
         <CardHeader>
-          <CardTitle>Active Energy Sources</CardTitle>
-          <CardDescription>Real-time dispatch from MILP optimization</CardDescription>
+          <CardTitle>Economic Summary</CardTitle>
+          <CardDescription>Current optimization impact from MILP algorithm</CardDescription>
         </CardHeader>
         <CardContent>
-          <div className="space-y-4">
-            {latest?.economic?.source_usage && Object.keys(latest.economic.source_usage).length > 0 ? (
-              Object.entries(latest.economic.source_usage).map(([sourceId, usage]) => {
-                const sourceInfo = SOURCE_INFO[sourceId as keyof typeof SOURCE_INFO]
-                const utilization = (usage.amps / usage.max_capacity) * 100
-                const Icon = sourceInfo?.icon || Zap
-                
-                return (
-                  <div key={sourceId} className="flex items-center gap-4">
-                    <Icon className="h-5 w-5" style={{ color: sourceInfo?.color || "#6b7280" }} />
-                    <div className="flex-1">
-                      <div className="flex justify-between items-center mb-1">
-                        <span className="text-sm font-medium">{sourceInfo?.name || sourceId}</span>
-                        <div className="flex items-center gap-2">
-                          <Badge variant={usage.amps > 0 ? "default" : "secondary"}>
-                            ${usage.cost_per_amp.toFixed(3)}/A
-                          </Badge>
-                          <span className="text-sm text-muted-foreground">
-                            {usage.amps.toFixed(2)}A / {usage.max_capacity.toFixed(1)}A
-                          </span>
-                        </div>
-                      </div>
-                      <Progress value={utilization} className="h-2" />
-                      <p className="text-xs text-muted-foreground mt-1">
-                        Cost: ${usage.cost.toFixed(4)}/s
-                      </p>
-                    </div>
-                  </div>
-                )
-              })
-            ) : (
-              <div className="text-center py-4 text-muted-foreground">
-                No active energy sources
+          <div className="grid gap-4 md:grid-cols-2">
+            {/* Current Period */}
+            <div className="space-y-2">
+              <h4 className="text-sm font-medium text-muted-foreground">Current Period</h4>
+              <div className="space-y-1">
+                <div className="flex justify-between">
+                  <span className="text-sm">Total Cost:</span>
+                  <span className="text-sm font-mono">${(latest?.economic?.total_cost_per_second || 0).toFixed(4)}/s</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-sm">Demand Met:</span>
+                  <span className="text-sm font-mono">{(latest?.economic?.efficiency_percent || 0).toFixed(1)}%</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-sm">Green Energy:</span>
+                  <span className="text-sm font-mono">{(latest?.economic?.green_energy_percent || 0).toFixed(1)}%</span>
+                </div>
               </div>
-            )}
+            </div>
+            
+            {/* Optimization Impact */}
+            <div className="space-y-2">
+              <h4 className="text-sm font-medium text-muted-foreground">Optimization Impact</h4>
+              <div className="space-y-1">
+                <div className="flex justify-between">
+                  <span className="text-sm">Cost Trend:</span>
+                  <div className="flex items-center gap-1">
+                    {costTrends.trend === 'down' ? (
+                      <TrendingDown className="h-3 w-3 text-green-500" />
+                    ) : costTrends.trend === 'up' ? (
+                      <TrendingUp className="h-3 w-3 text-red-500" />
+                    ) : (
+                      <div className="h-3 w-3 rounded-full bg-gray-400" />
+                    )}
+                    <span className={`text-sm font-mono ${
+                      costTrends.trend === 'down' ? 'text-green-600' : 
+                      costTrends.trend === 'up' ? 'text-red-600' : 'text-gray-600'
+                    }`}>
+                      {costTrends.trend === 'down' ? '-' : costTrends.trend === 'up' ? '+' : ''}{Math.abs(Number(costTrends.change))}%
+                    </span>
+                  </div>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-sm">Avg Cost:</span>
+                  <span className="text-sm font-mono">${costTrends.avg}/s</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-sm">Unmet Demand:</span>
+                  <span className="text-sm font-mono">{(latest?.economic?.unmet_demand || 0).toFixed(2)}A</span>
+                </div>
+              </div>
+            </div>
           </div>
         </CardContent>
       </Card>
