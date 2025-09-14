@@ -68,7 +68,7 @@ export default function MetricsPage() {
     
     return history.map((s, index) => {
       const totalDemand = s.nodes.filter((n) => n.type === "consumer").reduce((sum, n) => sum + n.demand, 0)
-      const totalSupply = s.nodes.filter((n) => n.type === "power").reduce((sum, n) => sum + n.fulfillment, 0)
+      // Since all nodes are now consumers, calculate routed power as actual fulfillment
       const totalRouted = s.nodes.filter((n) => n.type === "consumer").reduce((sum, n) => sum + n.fulfillment, 0)
       
       return {
@@ -78,9 +78,8 @@ export default function MetricsPage() {
           second: '2-digit' 
         }),
         timestamp: s.timestamp,
-        demand: Number(totalDemand.toFixed(2)),
-        supply: Number(totalSupply.toFixed(2)),
-        routed: Number(totalRouted.toFixed(2)),
+        demand: Number(totalDemand.toFixed(3)),
+        routed: Number(totalRouted.toFixed(3)),
         index
       }
     })
@@ -102,6 +101,12 @@ export default function MetricsPage() {
       index
     }))
   }, [history])
+
+  // Chart config for consistent shadcn/ui theming
+  const perfChartConfig = {
+    opt: { label: "Opt Time", color: "var(--chart-1)" },
+    conf: { label: "Confidence", color: "var(--chart-2)" },
+  } as const
 
   return (
     <main className="mx-auto max-w-7xl px-4 py-8">
@@ -218,12 +223,12 @@ export default function MetricsPage() {
                 <AreaChart data={chartData} margin={{ top: 10, right: 10, left: 10, bottom: 10 }}>
                   <defs>
                     <linearGradient id="demandGradient" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="hsl(var(--destructive))" stopOpacity={0.3}/>
-                      <stop offset="95%" stopColor="hsl(var(--destructive))" stopOpacity={0.1}/>
+                      <stop offset="5%" stopColor="hsl(var(--chart-1))" stopOpacity={0.4}/>
+                      <stop offset="95%" stopColor="hsl(var(--chart-1))" stopOpacity={0.1}/>
                     </linearGradient>
-                    <linearGradient id="supplyGradient" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="hsl(var(--primary))" stopOpacity={0.3}/>
-                      <stop offset="95%" stopColor="hsl(var(--primary))" stopOpacity={0.1}/>
+                    <linearGradient id="routedGradient" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="hsl(var(--chart-2))" stopOpacity={0.4}/>
+                      <stop offset="95%" stopColor="hsl(var(--chart-2))" stopOpacity={0.1}/>
                     </linearGradient>
                   </defs>
                   <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
@@ -238,6 +243,8 @@ export default function MetricsPage() {
                     tickLine={false}
                     axisLine={false}
                     width={35}
+                    domain={[0, 'dataMax + 1']}
+                    tickFormatter={(value) => `${value.toFixed(1)}A`}
                   />
                   <ChartTooltip 
                     content={({ active, payload, label }) => {
@@ -246,8 +253,13 @@ export default function MetricsPage() {
                           <div className="bg-background border rounded-lg p-3 shadow-lg">
                             <p className="font-medium">{label}</p>
                             {payload.map((entry, index) => (
-                              <p key={index} className="text-sm" style={{ color: entry.color }}>
-                                {entry.name}: {entry.value}A
+                              <p 
+                                key={index} 
+                                className="text-sm" 
+                                style={{ '--tooltip-color': entry.color } as React.CSSProperties}
+                                data-tooltip-color={entry.color}
+                              >
+                                <span style={{ color: entry.color }}>{entry.name}: {Number(entry.value).toFixed(2)}A</span>
                               </p>
                             ))}
                           </div>
@@ -259,18 +271,22 @@ export default function MetricsPage() {
                   <Area
                     type="monotone"
                     dataKey="demand"
-                    stroke="hsl(var(--destructive))"
+                    stroke="hsl(var(--chart-1))"
                     fill="url(#demandGradient)"
                     strokeWidth={2}
                     name="Demand"
+                    connectNulls={false}
+                    dot={false}
                   />
                   <Area
                     type="monotone"
                     dataKey="routed"
-                    stroke="hsl(var(--primary))"
-                    fill="url(#supplyGradient)"
+                    stroke="hsl(var(--chart-2))"
+                    fill="url(#routedGradient)"
                     strokeWidth={2}
                     name="Routed"
+                    connectNulls={false}
+                    dot={false}
                   />
                 </AreaChart>
               </ResponsiveContainer>
@@ -287,7 +303,17 @@ export default function MetricsPage() {
           <CardContent>
             <div className="h-[300px]">
               <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={performanceData} margin={{ top: 10, right: 10, left: 10, bottom: 10 }}>
+                <AreaChart data={performanceData} margin={{ top: 10, right: 10, left: 10, bottom: 10 }}>
+                  <defs>
+                    <linearGradient id="optGradient" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="hsl(var(--chart-1))" stopOpacity={0.4}/>
+                      <stop offset="95%" stopColor="hsl(var(--chart-1))" stopOpacity={0.1}/>
+                    </linearGradient>
+                    <linearGradient id="confGradient" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="hsl(var(--chart-2))" stopOpacity={0.4}/>
+                      <stop offset="95%" stopColor="hsl(var(--chart-2))" stopOpacity={0.1}/>
+                    </linearGradient>
+                  </defs>
                   <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
                   <XAxis 
                     dataKey="time" 
@@ -301,7 +327,7 @@ export default function MetricsPage() {
                     tickLine={false}
                     axisLine={false}
                     width={35}
-                    domain={[0, 100]}
+                    domain={[0, 'dataMax + 10']}
                   />
                   <YAxis 
                     yAxisId="right"
@@ -319,8 +345,10 @@ export default function MetricsPage() {
                           <div className="bg-background border rounded-lg p-3 shadow-lg">
                             <p className="font-medium">{label}</p>
                             {payload.map((entry, index) => (
-                              <p key={index} className="text-sm" style={{ color: entry.color }}>
-                                {entry.name}: {entry.value}{entry.dataKey === 'optimizationTime' ? 'ms' : '%'}
+                              <p key={index} className="text-sm">
+                                <span style={{ color: entry.color }}>
+                                  {entry.name}: {Number(entry.value).toFixed(2)}{entry.dataKey === 'optimizationTime' ? 'ms' : '%'}
+                                </span>
                               </p>
                             ))}
                           </div>
@@ -329,25 +357,29 @@ export default function MetricsPage() {
                       return null
                     }}
                   />
-                  <Line
+                  <Area
                     yAxisId="left"
                     type="monotone"
                     dataKey="optimizationTime"
                     stroke="hsl(var(--chart-1))"
+                    fill="url(#optGradient)"
                     strokeWidth={2}
-                    dot={false}
                     name="Opt Time"
+                    connectNulls={false}
+                    dot={false}
                   />
-                  <Line
+                  <Area
                     yAxisId="right"
                     type="monotone"
                     dataKey="confidence"
                     stroke="hsl(var(--chart-2))"
+                    fill="url(#confGradient)"
                     strokeWidth={2}
-                    dot={false}
                     name="Confidence"
+                    connectNulls={false}
+                    dot={false}
                   />
-                </LineChart>
+                </AreaChart>
               </ResponsiveContainer>
             </div>
           </CardContent>
@@ -381,32 +413,48 @@ export default function MetricsPage() {
                     </Tr>
                   </Thead>
                   <Tbody>
-                    {latest.nodes.map((node) => {
+                    {latest.nodes.map((node, index) => {
                       const efficiency = node.type === "consumer" 
                         ? (node.fulfillment / Math.max(node.demand, 0.1)) * 100
                         : node.fulfillment
                       
                       return (
-                        <Tr key={node.id}>
-                          <Td className="font-mono font-semibold">{node.id}</Td>
+                        <Tr 
+                          key={node.id} 
+                          className={`
+                            transition-all duration-300 hover:bg-muted/50
+                            ${index % 2 === 0 ? 'bg-muted/20' : 'bg-background'}
+                            animate-pulse [animation-duration:2s]
+                          `}
+                        >
+                          <Td className="font-mono font-semibold">
+                            <div className="flex items-center gap-2">
+                              <div className="w-1.5 h-1.5 rounded-full bg-chart-2 animate-pulse" />
+                              {node.id}
+                            </div>
+                          </Td>
                           <Td>
                             <Badge variant={node.type === "consumer" ? "default" : "secondary"}>
                               {node.type}
                             </Badge>
                           </Td>
                           <Td className="text-right font-mono">
-                            {node.demand.toFixed(3)}
+                            <span className="transition-all duration-500">
+                              {node.demand.toFixed(3)}
+                            </span>
                           </Td>
                           <Td className="text-right font-mono">
-                            {node.fulfillment.toFixed(3)}
+                            <span className="transition-all duration-500">
+                              {node.fulfillment.toFixed(3)}
+                            </span>
                           </Td>
                           <Td>
                             <div className="flex items-center gap-2">
-                              <div className={`w-2 h-2 rounded-full ${
+                              <div className={`w-2 h-2 rounded-full transition-colors duration-500 ${
                                 efficiency > 90 ? 'bg-green-500' :
                                 efficiency > 70 ? 'bg-yellow-500' : 'bg-red-500'
                               }`} />
-                              <span className="text-xs text-muted-foreground">
+                              <span className="text-xs text-muted-foreground transition-all duration-500">
                                 {efficiency.toFixed(0)}%
                               </span>
                             </div>
@@ -497,8 +545,8 @@ export default function MetricsPage() {
                   <span className="font-mono">
                     {(() => {
                       const demand = latest.nodes.filter(n => n.type === "consumer").reduce((sum, n) => sum + n.demand, 0)
-                      const supply = latest.nodes.filter(n => n.type === "power").reduce((sum, n) => sum + n.fulfillment, 0)
-                      const ratio = demand > 0 ? (supply / demand) * 100 : 100
+                      const routed = latest.nodes.filter(n => n.type === "consumer").reduce((sum, n) => sum + n.fulfillment, 0)
+                      const ratio = demand > 0 ? (routed / demand) * 100 : 100
                       return `${ratio.toFixed(0)}%`
                     })()}
                   </span>
@@ -506,13 +554,13 @@ export default function MetricsPage() {
                 <Progress 
                   value={(() => {
                     const demand = latest.nodes.filter(n => n.type === "consumer").reduce((sum, n) => sum + n.demand, 0)
-                    const supply = latest.nodes.filter(n => n.type === "power").reduce((sum, n) => sum + n.fulfillment, 0)
-                    return demand > 0 ? Math.min(100, (supply / demand) * 100) : 100
+                    const routed = latest.nodes.filter(n => n.type === "consumer").reduce((sum, n) => sum + n.fulfillment, 0)
+                    return demand > 0 ? Math.min(100, (routed / demand) * 100) : 100
                   })()} 
                   className="h-2"
                 />
                 <p className="text-xs text-muted-foreground mt-1">
-                  Supply capacity vs total demand
+                  Power routed vs total demand
                 </p>
               </div>
             )}
