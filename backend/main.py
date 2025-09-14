@@ -323,7 +323,7 @@ async def process_hardware_telemetry(data: Dict[str, Any]):
                 confidence_scores.append(confidence)
                 
                 # Check if we need Cerebras escalation
-                if confidence < 0.5 and cerebras_agent:  # Low confidence threshold
+                if confidence < 0.1 and cerebras_agent:  # Low confidence threshold
                     logger.info(
                         f"Low confidence ({confidence:.2f}) → escalating to Cerebras AI | "
                         f"records={len(records)}, total_demand={sum(r.demand_amps for r in records):.2f}A, "
@@ -393,7 +393,7 @@ async def process_hardware_telemetry(data: Dict[str, Any]):
                     except Exception as e:
                         logger.error(f"Cerebras escalation failed: {e}")
                         # Continue with original MILP solution (no fallback)
-                elif confidence < 0.5:
+                elif confidence < 0.1:
                     logger.warning("Low confidence but no Cerebras agent available")
                 
                 # Send dispatch commands back to ESP32

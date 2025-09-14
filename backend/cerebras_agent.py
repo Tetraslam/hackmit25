@@ -76,7 +76,7 @@ class CerebrasAgent:
         )
         
         self.model = "gpt-oss-120b"
-        self.max_tokens = 1000
+        self.max_tokens = 4096  # Increased to ensure complete JSON responses
         self.temperature = 0.1  # Low temperature for consistent decisions
         
     async def make_dispatch_decision(
@@ -149,7 +149,32 @@ AVAILABLE ENERGY SOURCES:
 
 {f"ADDITIONAL CONTEXT: {context}" if context else ""}
 
-TASK: Provide dispatch decisions to allocate power from sources to consumer nodes. Consider costs, constraints, and grid stability. Explain your reasoning clearly."""
+TASK: Provide dispatch decisions to allocate power from sources to consumer nodes. Consider costs, constraints, and grid stability. Explain your reasoning clearly.
+
+REQUIRED OUTPUT FORMAT (JSON):
+{{
+  "decisions": [
+    {{
+      "id": "1",
+      "supply_amps": 2.5,
+      "source_id": "1"
+    }},
+    {{
+      "id": "2", 
+      "supply_amps": 3.2,
+      "source_id": "1"
+    }}
+  ],
+  "reasoning": "Clear explanation of dispatch logic and considerations",
+  "confidence": 0.85
+}}
+
+CRITICAL: 
+- Node IDs must be simple numeric strings: "1", "2", "3", "4" (NOT "Node1" or "node_1")
+- Source IDs must be simple numeric strings: "1", "2", "3" (NOT "source1" or "Source_1") 
+- Supply values are in Amperes (float)
+- Confidence is 0.0-1.0 (float)
+- Output ONLY valid JSON matching this exact structure"""
 
         try:
             # Call Cerebras with structured output
@@ -189,15 +214,58 @@ TASK: Provide dispatch decisions to allocate power from sources to consumer node
                 }
             )
             
-            # Parse structured response
+            # Parse structured response with better error handling
             content = response.choices[0].message.content
-            result_data = json.loads(content)
+            if not content:
+                raise ValueError("Empty response from Cerebras API")
+            
+            # Clean up common JSON issues
+            content = content.strip()
+            if not content.startswith('{'):
+                # Sometimes AI adds text before JSON, find the first {
+                start_idx = content.find('{')
+                if start_idx == -1:
+                    raise ValueError(f"No JSON object found in response: {content[:200]}...")
+                content = content[start_idx:]
+            
+            if not content.endswith('}'):
+                # Sometimes AI adds text after JSON, find the last }
+                end_idx = content.rfind('}')
+                if end_idx == -1:
+                    # Try to find incomplete JSON and complete it
+                    if '"reasoning":' in content and '"confidence":' in content:
+                        # Looks like incomplete JSON, try to close it
+                        if not content.rstrip().endswith('}'):
+                            content = content.rstrip() + '\n}'
+                    else:
+                        raise ValueError(f"No complete JSON object found in response: {content[:200]}...")
+                else:
+                    content = content[:end_idx+1]
+            
+            try:
+                result_data = json.loads(content)
+            except json.JSONDecodeError as je:
+                # Show more context around the error position
+                error_pos = getattr(je, 'pos', 0)
+                start_pos = max(0, error_pos - 100)
+                end_pos = min(len(content), error_pos + 100)
+                context = content[start_pos:end_pos]
+                raise ValueError(f"Invalid JSON from Cerebras: {je}. Context around error: ...{context}...")
+            
+            # Validate required fields
+            if not isinstance(result_data, dict):
+                raise ValueError(f"Response is not a JSON object: {type(result_data)}")
+            
+            required_fields = ["decisions", "reasoning", "confidence"]
+            missing_fields = [f for f in required_fields if f not in result_data]
+            if missing_fields:
+                raise ValueError(f"Missing required fields: {missing_fields}. Got: {list(result_data.keys())}")
             
             return CerebrasDispatchResponse(**result_data)
             
         except Exception as e:
-            # Re-raise exception - no fallback, let caller handle
-            raise e
+            # Re-raise exception with more context - no fallback, let caller handle
+            raise ValueError(f"Cerebras AI dispatch failed: {str(e)}") from e
     
     async def health_check(self) -> bool:
         """Check if Cerebras API is available."""

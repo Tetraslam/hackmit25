@@ -69,6 +69,14 @@ static power_grid_data_t grid_data;
 static uint8_t ws_buffer[MAX_WS_BUFFER];
 static uint8_t binary_buffer[256];  // Buffer for binary protocol
 static ledc_channel_t node_to_channel[MAX_NODES] = {0};
+// Phase randomization for realistic load patterns
+typedef struct {
+    float demand_phase;      // Phase offset for demand sine wave
+    float fulfillment_phase; // Phase offset for fulfillment sine wave  
+    float freq_variation;    // Small frequency variation (±10%)
+} node_phase_t;
+
+static node_phase_t node_phases[MAX_NODES]; // Random phase data for each node
 
 // Removed complex async queueing - use simple direct send
 
@@ -119,8 +127,27 @@ static void set_output_pwm(int node_id, float supply)
     }
 }
 
+static void init_phase_randomization(void)
+{
+    // Initialize random number generator with hardware entropy
+    srand(esp_random());
+    
+    // Generate comprehensive random phase data for each node
+    for (int i = 0; i < MAX_NODES; i++) {
+        node_phases[i].demand_phase = ((float)rand() / RAND_MAX) * 2.0f * M_PI;
+        node_phases[i].fulfillment_phase = ((float)rand() / RAND_MAX) * 2.0f * M_PI;
+        // Frequency variation: ±10% (0.9 to 1.1 multiplier)
+        node_phases[i].freq_variation = 0.9f + ((float)rand() / RAND_MAX) * 0.2f;
+    }
+    
+    ESP_LOGI(POWER_GRID_TAG, "Initialized randomized phase offsets and frequency variations for realistic load patterns");
+}
+
 static void init_dummy_nodes(void)
 {
+    // Initialize random phase offsets first
+    init_phase_randomization();
+    
     // Dynamically set node count based on output_pins array
     grid_data.node_count = NUM_OUTPUT_PINS;
 
@@ -155,20 +182,21 @@ static void update_dummy_data(void)
     for (int i = 0; i < grid_data.node_count; i++) {
         power_node_t *node = &grid_data.nodes[i];
 
-        float phase_offset = i * 0.5f; // Different phase for each node
+        // Get randomized phase data for this node (node_id is 1-based)
+        node_phase_t *phase_data = &node_phases[node->id - 1];
 
         if (strcmp(node->type, "consumer") == 0) {
             // Demand varies sinusoidally between 0.5 and 4.0
             float base_demand = 2.25f; // midpoint
             float demand_amplitude = 1.75f; // amplitude
-            float demand_freq = 0.2f; // frequency in Hz
-            node->demand = base_demand + demand_amplitude * sinf(2.0f * M_PI * demand_freq * time_s + phase_offset);
+            float demand_freq = 0.2f * phase_data->freq_variation; // Varied frequency
+            node->demand = base_demand + demand_amplitude * sinf(2.0f * M_PI * demand_freq * time_s + phase_data->demand_phase);
 
-            // Fulfillment varies between 0.7 and 1.0
+            // Fulfillment varies between 0.7 and 1.0 with independent phase and frequency
             float base_ff = 0.85f;
             float ff_amplitude = 0.15f;
-            float ff_freq = 0.12f;
-            node->fulfillment = base_ff + ff_amplitude * sinf(2.0f * M_PI * ff_freq * time_s + phase_offset + 1.0f);
+            float ff_freq = 0.12f * phase_data->freq_variation; // Varied frequency
+            node->fulfillment = base_ff + ff_amplitude * sinf(2.0f * M_PI * ff_freq * time_s + phase_data->fulfillment_phase);
         } else {
             // Power generators have zero demand
             node->demand = 0.0;
@@ -176,8 +204,8 @@ static void update_dummy_data(void)
             // Generator fulfillment varies between 0.8 and 1.0
             float base_ff = 0.9f;
             float ff_amplitude = 0.1f;
-            float ff_freq = 0.06f;
-            node->fulfillment = base_ff + ff_amplitude * sinf(2.0f * M_PI * ff_freq * time_s + phase_offset + 2.0f);
+            float ff_freq = 0.06f * phase_data->freq_variation; // Varied frequency
+            node->fulfillment = base_ff + ff_amplitude * sinf(2.0f * M_PI * ff_freq * time_s + phase_data->fulfillment_phase);
         }
     }
 }

@@ -298,45 +298,7 @@ export function DynamicNodesDisplay({ nodes, onUpdateNodes }: DynamicNodesDispla
         )}
       </div>
 
-      {/* Summary Stats */}
-      {consumers.length > 0 && (
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base">System Summary</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="grid grid-cols-3 gap-4 text-center">
-              <div>
-                <div className="text-2xl font-bold">
-                  {consumers.length}
-                </div>
-                <div className="text-xs text-muted-foreground">
-                  Active Consumers
-                </div>
-              </div>
-              <div>
-                <div className="text-2xl font-bold">
-                  {consumers.reduce((sum, c) => sum + c.demand, 0).toFixed(1)}A
-                </div>
-                <div className="text-xs text-muted-foreground">
-                  Total Demand
-                </div>
-              </div>
-              <div>
-                <div className="text-2xl font-bold">
-                  {consumers.length > 0 
-                    ? ((consumers.reduce((sum, c) => sum + (c.fulfillment / c.demand * 100), 0) / consumers.length) || 0).toFixed(1)
-                    : 0
-                  }%
-                </div>
-                <div className="text-xs text-muted-foreground">
-                  Avg Efficiency
-                </div>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-      )}
+      
     </div>
   )
 }
