@@ -19,6 +19,7 @@ import logging
 # Import binary protocol from project root
 import sys
 import time
+from asyncio import Event
 from collections import defaultdict, deque
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -28,6 +29,8 @@ import numpy as np
 import websockets
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
+from cerebras_agent import (CerebrasAgent, EnergySourceInfo, NodeReading,
+                            create_cerebras_agent)
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from microgrid_optimizer import DemandRecord, EnergySource, MicrogridOptimizer
@@ -46,11 +49,16 @@ logger = logging.getLogger(__name__)
 # Global state
 hardware_websocket_out: Optional[websockets.WebSocketCommonProtocol] = None
 hardware_websocket_in: Optional[websockets.WebSocketCommonProtocol] = None
+out_ready_event: Event = Event()  # Signal that /out is connected and streaming
 frontend_clients: List[WebSocket] = []
 optimizer = MicrogridOptimizer(epoch_len=1/24, horizon=10)
 telemetry_buffer = deque(maxlen=1000)  # Store last 1000 readings
 latest_metrics: Dict[str, Any] = {}
 confidence_scores = deque(maxlen=100)
+
+# Initialize Cerebras AI agent
+cerebras_agent = create_cerebras_agent()
+cerebras_escalations = deque(maxlen=50)  # Track AI escalation frequency
 
 # Performance tracking
 telemetry_timestamps = deque(maxlen=100)  # Track ESP32 input timing for Hz calculation
@@ -60,10 +68,9 @@ dispatch_counts = deque(maxlen=50)  # Track dispatch counts
 console = Console()
 live_table = None
 
-# Energy sources configuration
+# Energy sources configuration - single virtual source for LED control
 ENERGY_SOURCES = [
-    EnergySource(id="ESP32_MAIN", max_supply_amps=5.0, cost_per_amp=0.10, ramp_limit_amps=None),
-    EnergySource(id="IRON_AIR_BACKUP", max_supply_amps=3.0, cost_per_amp=0.05, ramp_limit_amps=1.0),
+    EnergySource(id="VIRTUAL_ESP32", max_supply_amps=10.0, cost_per_amp=0.10, ramp_limit_amps=None),
 ]
 
 class TelemetryData(BaseModel):
@@ -141,6 +148,13 @@ def create_metrics_table() -> Table:
     avg_dispatches = np.mean(dispatch_counts) if dispatch_counts else 0
     table.add_row("Avg Dispatches", f"{avg_dispatches:.1f} per cycle", "")
     
+    # Cerebras AI Escalations
+    recent_escalations = [t for t in cerebras_escalations if time.time() - t < 60]  # Last minute
+    escalation_rate = len(recent_escalations)
+    escalation_color = "red" if escalation_rate > 10 else "yellow" if escalation_rate > 3 else "green"
+    agent_status = "Available" if cerebras_agent else "Not configured"
+    table.add_row("Cerebras AI", f"{escalation_rate}/min", f"[{escalation_color}]{agent_status}[/{escalation_color}]")
+    
     # Frontend Clients
     table.add_row("Frontend Clients", f"{len(frontend_clients)} connected", "")
     
@@ -177,33 +191,45 @@ async def connect_to_esp32_out():
             uri = f"ws://{esp_ip}/out"
             logger.info(f"Connecting to ESP32 /out at {uri}")
 
-            async with websockets.connect(
-                uri,
-                ping_interval=20,
-                ping_timeout=10,
-                close_timeout=5.0,
-                max_size=2**20,
-                compression=None,
-                subprotocols=["binary"],
-                origin="http://griddy-backend"
-            ) as websocket:
+            async with websockets.connect(uri, ping_interval=None) as websocket:
                 hardware_websocket_out = websocket
                 logger.info("Connected to ESP32 /out for telemetry")
 
+                # Explicitly pull the first frame like the test script does
+                logger.info("Awaiting first telemetry frame from /out...")
+                try:
+                    first_msg = await asyncio.wait_for(websocket.recv(), timeout=2.0)
+                    if not isinstance(first_msg, bytes):
+                        logger.error(f"First /out frame is text, expected binary. Frame={first_msg!r}")
+                        continue
+                    logger.info(f"First /out frame received: {len(first_msg)} bytes")
+                    first_packet = BinaryProtocol.decode_telemetry(first_msg)
+                    if not first_packet:
+                        logger.warning("Failed to decode first telemetry packet from /out; hex dump follows")
+                        logger.warning(first_msg[:32].hex())
+                    else:
+                        logger.info(f"First packet OK: {len(first_packet.nodes)} nodes @ ts={first_packet.timestamp}")
+                        # Process immediately
+                        await process_hardware_telemetry(BinaryProtocol.telemetry_to_json_compat(first_packet))
+                        # Only now signal readiness for /in
+                        if not out_ready_event.is_set():
+                            out_ready_event.set()
+                except asyncio.TimeoutError:
+                    logger.warning("Timeout waiting for first /out telemetry (2s). Will reconnect.")
+                    continue
+
+                # Stream subsequent frames
                 async for message in websocket:
                     try:
                         if isinstance(message, bytes):
-                            logger.debug(f"Received binary telemetry: {len(message)} bytes")
                             packet = BinaryProtocol.decode_telemetry(message)
                             if packet:
-                                logger.debug(f"Successfully parsed binary telemetry: {len(packet.nodes)} nodes")
-                                data = BinaryProtocol.telemetry_to_json_compat(packet)
-                                await process_hardware_telemetry(data)
+                                await process_hardware_telemetry(BinaryProtocol.telemetry_to_json_compat(packet))
                             else:
-                                logger.warning(f"Failed to parse binary telemetry: {len(message)} bytes")
-                                logger.warning(f"First 20 bytes: {message[:20].hex()}")
+                                logger.warning(f"Decode failure on /out packet ({len(message)} bytes)")
+                                logger.warning(message[:32].hex())
                         else:
-                            logger.error(f"Received text message on /out - binary protocol only: {message}")
+                            logger.error(f"Received text on /out; ignoring. Frame={message!r}")
                     except Exception as e:
                         logger.error(f"Error processing telemetry from /out: {e}")
 
@@ -218,20 +244,16 @@ async def connect_to_esp32_in():
 
     while True:
         try:
+            # Ensure /out is connected before opening /in
+            if not out_ready_event.is_set():
+                logger.info("Waiting for /out to be ready before connecting /in...")
+                await out_ready_event.wait()
+
             esp_ip = await get_esp32_ip()
             uri = f"ws://{esp_ip}/in"
             logger.info(f"Connecting to ESP32 /in at {uri}")
 
-            async with websockets.connect(
-                uri,
-                ping_interval=20,
-                ping_timeout=10,
-                close_timeout=5.0,
-                max_size=2**20,
-                compression=None,
-                subprotocols=["binary"],
-                origin="http://griddy-backend"
-            ) as websocket:
+            async with websockets.connect(uri, ping_interval=None) as websocket:
                 hardware_websocket_in = websocket
                 logger.info("Connected to ESP32 /in for dispatch commands")
 
@@ -297,9 +319,65 @@ async def process_hardware_telemetry(data: Dict[str, Any]):
                 confidence_scores.append(confidence)
                 
                 # Check if we need Cerebras escalation
-                if confidence < 0.5:  # Low confidence threshold
-                    logger.info(f"Low confidence ({confidence:.2f}), considering Cerebras escalation")
-                    # TODO: Implement Cerebras API call
+                if confidence < 0.5 and cerebras_agent:  # Low confidence threshold
+                    logger.info(f"Low confidence ({confidence:.2f}), escalating to Cerebras AI")
+                    try:
+                        # Convert records to Cerebras format
+                        sensor_readings = []
+                        for record in records:
+                            sensor_readings.append(NodeReading(
+                                id=record.node_id,
+                                type="consumer",
+                                demand_amps=record.demand_amps,
+                                fulfillment=record.fulfillment
+                            ))
+                        
+                        # Convert sources to Cerebras format
+                        source_info = []
+                        for source in ENERGY_SOURCES:
+                            source_info.append(EnergySourceInfo(
+                                id=source.id,
+                                max_supply_amps=source.max_supply_amps,
+                                cost_per_amp=source.cost_per_amp,
+                                ramp_limit_amps=source.ramp_limit_amps
+                            ))
+                        
+                        # Get AI decision
+                        ai_start = time.time()
+                        ai_response = await cerebras_agent.make_dispatch_decision(
+                            sensor_readings=sensor_readings,
+                            energy_sources=source_info,
+                            optimization_time_ms=opt_time,
+                            milp_confidence=confidence,
+                            context="Iron-air battery backup available, prioritize grid stability"
+                        )
+                        ai_time = (time.time() - ai_start) * 1000
+                        
+                        # Convert AI decisions to standard format
+                        dispatch_instructions = []
+                        for decision in ai_response.decisions:
+                            dispatch_instructions.append({
+                                "id": decision.id,
+                                "supply_amps": decision.supply_amps,
+                                "source_id": decision.source_id
+                            })
+                        
+                        # Update confidence with AI confidence
+                        confidence = ai_response.confidence
+                        confidence_scores.append(confidence)
+                        
+                        # Track escalation
+                        cerebras_escalations.append(time.time())
+                        
+                        logger.info(f"Cerebras AI decision: {len(dispatch_instructions)} commands, "
+                                  f"confidence={confidence:.2f}, time={ai_time:.1f}ms")
+                        logger.info(f"AI reasoning: {ai_response.reasoning}")
+                        
+                    except Exception as e:
+                        logger.error(f"Cerebras escalation failed: {e}")
+                        # Continue with original MILP solution (no fallback)
+                elif confidence < 0.5:
+                    logger.warning("Low confidence but no Cerebras agent available")
                 
                 # Send dispatch commands back to ESP32
                 await send_dispatch_to_hardware(dispatch_instructions)

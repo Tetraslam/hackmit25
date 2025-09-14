@@ -59,7 +59,8 @@ static const output_pin_map_t output_pins[NUM_OUTPUT_PINS] = {
 };
 
 static httpd_handle_t server_handle = NULL;
-static int ws_out_fd = -1;
+#define MAX_OUT_CLIENTS 4
+static int ws_out_fds[MAX_OUT_CLIENTS] = {-1, -1, -1, -1};
 static int ws_in_fd = -1;
 static TaskHandle_t data_task = NULL;
 static volatile bool should_send_data = false;
@@ -110,14 +111,12 @@ static void set_output_pwm(int node_id, float supply)
 
 static void init_dummy_nodes(void)
 {
-    grid_data.node_count = 6;
+    grid_data.node_count = 3;  // Only the 3 nodes with LEDs
 
-    grid_data.nodes[0] = (power_node_t){1, "power", 0.0, 0.95};
-    grid_data.nodes[1] = (power_node_t){2, "power", 0.0, 0.87};
-    grid_data.nodes[2] = (power_node_t){3, "consumer", 2.5, 0.92};
-    grid_data.nodes[3] = (power_node_t){4, "consumer", 1.8, 0.88};
-    grid_data.nodes[4] = (power_node_t){5, "consumer", 3.2, 0.95};
-    grid_data.nodes[5] = (power_node_t){6, "power", 0.0, 0.91};
+    // All nodes with LEDs are consumers (nodes 1, 2, 3 have LEDs)
+    grid_data.nodes[0] = (power_node_t){1, "consumer", 2.5, 0.92};
+    grid_data.nodes[1] = (power_node_t){2, "consumer", 1.8, 0.88};
+    grid_data.nodes[2] = (power_node_t){3, "consumer", 3.2, 0.95};
 
     // Initialize node-to-channel mapping
     memset(node_to_channel, 0, sizeof(node_to_channel));
@@ -145,7 +144,7 @@ static void update_dummy_data(void)
             // Demand varies sinusoidally between 0.5 and 4.0
             float base_demand = 2.25f; // midpoint
             float demand_amplitude = 1.75f; // amplitude
-            float demand_freq = 0.08f; // frequency in Hz
+            float demand_freq = 0.2f; // frequency in Hz
             node->demand = base_demand + demand_amplitude * sinf(2.0f * M_PI * demand_freq * time_s + phase_offset);
 
             // Fulfillment varies between 0.7 and 1.0
@@ -196,7 +195,7 @@ static void data_send_task(void *pvParameters)
     vTaskDelay(pdMS_TO_TICKS(100)); // Give connection time to establish
 
     while (1) {
-        if (should_send_data && ws_out_fd >= 0 && server_handle) {
+        if (should_send_data && server_handle) {
             update_dummy_data();
 
             // Use binary protocol for efficiency
@@ -210,20 +209,33 @@ static void data_send_task(void *pvParameters)
                     .len = binary_len
                 };
 
-                esp_err_t ret = httpd_ws_send_frame_async(server_handle, ws_out_fd, &ws_frame);
-                if (ret != ESP_OK) {
-                    ESP_LOGE(POWER_GRID_TAG, "WebSocket send failed: %s", esp_err_to_name(ret));
-                    if (ret == ESP_ERR_INVALID_ARG || ret == ESP_ERR_INVALID_STATE) {
-                        ESP_LOGI(POWER_GRID_TAG, "Output connection lost, stopping data transmission");
-                        ws_out_fd = -1;
-                        should_send_data = false;
+                // Send to all connected /out clients
+                int active_clients = 0;
+                for (int i = 0; i < MAX_OUT_CLIENTS; i++) {
+                    if (ws_out_fds[i] >= 0) {
+                        esp_err_t ret = httpd_ws_send_frame_async(server_handle, ws_out_fds[i], &ws_frame);
+                        if (ret != ESP_OK) {
+                            ESP_LOGW(POWER_GRID_TAG, "WebSocket send failed to client %d: %s", i, esp_err_to_name(ret));
+                            if (ret == ESP_ERR_INVALID_ARG || ret == ESP_ERR_INVALID_STATE) {
+                                ESP_LOGI(POWER_GRID_TAG, "Output client %d disconnected", i);
+                                ws_out_fds[i] = -1;
+                            }
+                        } else {
+                            active_clients++;
+                        }
                     }
-                } else {
-                    // Log efficiency gain
-                    static int log_counter = 0;
-                    if (++log_counter % 240 == 0) {  // Log every 10 seconds at 24Hz
-                        ESP_LOGI(POWER_GRID_TAG, "Binary telemetry: %d bytes (vs ~150 JSON)", binary_len);
-                    }
+                }
+
+                // Update should_send_data based on active clients
+                if (active_clients == 0) {
+                    should_send_data = false;
+                    ESP_LOGI(POWER_GRID_TAG, "No active /out clients, stopping data transmission");
+                }
+
+                // Log efficiency gain occasionally
+                static int log_counter = 0;
+                if (++log_counter % 240 == 0) {  // Log every 10 seconds at 24Hz
+                    ESP_LOGI(POWER_GRID_TAG, "Binary telemetry: %d bytes to %d clients (vs ~150 JSON)", binary_len, active_clients);
                 }
             }
         }
@@ -236,8 +248,23 @@ static esp_err_t power_grid_ws_out_handler(httpd_req_t *req)
     if (req->method == HTTP_GET) {
         ESP_LOGI(POWER_GRID_TAG, "WebSocket /out handshake completed, starting data stream");
 
-        ws_out_fd = httpd_req_to_sockfd(req);
+        // Find empty slot for new client
+        int client_slot = -1;
+        for (int i = 0; i < MAX_OUT_CLIENTS; i++) {
+            if (ws_out_fds[i] == -1) {
+                client_slot = i;
+                break;
+            }
+        }
+
+        if (client_slot == -1) {
+            ESP_LOGW(POWER_GRID_TAG, "Too many /out clients, rejecting connection");
+            return ESP_FAIL;
+        }
+
+        ws_out_fds[client_slot] = httpd_req_to_sockfd(req);
         should_send_data = true;
+        ESP_LOGI(POWER_GRID_TAG, "Added /out client %d (fd=%d)", client_slot, ws_out_fds[client_slot]);
 
         if (data_task == NULL) {
             xTaskCreate(data_send_task, "data_send", 4096, NULL, 5, &data_task);
@@ -247,43 +274,8 @@ static esp_err_t power_grid_ws_out_handler(httpd_req_t *req)
         return ESP_OK;
     }
 
-    httpd_ws_frame_t ws_pkt;
-    memset(&ws_pkt, 0, sizeof(httpd_ws_frame_t));
-
-    esp_err_t ret = httpd_ws_recv_frame(req, &ws_pkt, 0);
-    if (ret != ESP_OK) {
-        static int error_count = 0;
-        static int64_t last_error_time = 0;
-        int64_t now = esp_timer_get_time() / 1000;
-
-        error_count++;
-
-        if (now - last_error_time > 5000 || error_count >= 10) {
-            ESP_LOGW(POWER_GRID_TAG, "WebSocket /out recv errors: %d in last %.1fs, latest: %s",
-                    error_count, (now - last_error_time) / 1000.0f, esp_err_to_name(ret));
-            error_count = 0;
-            last_error_time = now;
-        }
-
-        if (ret == ESP_ERR_INVALID_STATE && error_count >= 10) {
-            ESP_LOGE(POWER_GRID_TAG, "Persistent WebSocket /out errors, disconnecting");
-            ws_out_fd = -1;
-            should_send_data = false;
-        }
-
-        return ESP_OK;
-    }
-
-    if (ws_pkt.len > 0 && ws_pkt.len < MAX_WS_BUFFER - 1) {
-        ws_pkt.payload = ws_buffer;
-        ret = httpd_ws_recv_frame(req, &ws_pkt, ws_pkt.len);
-
-        if (ret == ESP_OK && ws_pkt.type == HTTPD_WS_TYPE_CLOSE) {
-            ESP_LOGI(POWER_GRID_TAG, "WebSocket /out connection closed by client");
-            ws_out_fd = -1;
-            should_send_data = false;
-        }
-    }
+    // /out is send-only - we don't expect to receive data from clients
+    // Just return OK and let data_send_task handle all outgoing frames
 
     return ESP_OK;
 }
@@ -398,7 +390,9 @@ esp_err_t register_power_grid_handler(httpd_handle_t server)
 void power_grid_cleanup(void)
 {
     should_send_data = false;
-    ws_out_fd = -1;
+    for (int i = 0; i < MAX_OUT_CLIENTS; i++) {
+        ws_out_fds[i] = -1;
+    }
     ws_in_fd = -1;
     server_handle = NULL;
     if (data_task) {
