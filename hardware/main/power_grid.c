@@ -21,7 +21,7 @@
 #include "binary_protocol.h"
 
 #define POWER_GRID_TAG "power_grid"
-#define DATA_SEND_INTERVAL_MS 42  // 24 Hz = ~41.67ms
+#define DATA_SEND_INTERVAL_MS 100  // 10 Hz = 100ms
 #define MAX_NODES 8
 #define MAX_JSON_BUFFER 2048
 
@@ -30,7 +30,7 @@
 #define LEDC_FREQUENCY 1000
 #define MAX_DUTY (1 << LEDC_DUTY_RES) - 1
 
-#define NUM_OUTPUT_PINS 3
+#define NUM_OUTPUT_PINS 4
 #define MAX_WS_BUFFER 512
 
 typedef struct {
@@ -55,7 +55,8 @@ typedef struct {
 static const output_pin_map_t output_pins[NUM_OUTPUT_PINS] = {
     {1, 14, LEDC_CHANNEL_0},
     {2, 27, LEDC_CHANNEL_1},
-    {3, 26, LEDC_CHANNEL_2}
+    {3, 26, LEDC_CHANNEL_2},
+    {4, 33, LEDC_CHANNEL_3}
 };
 
 static httpd_handle_t server_handle = NULL;
@@ -68,6 +69,8 @@ static power_grid_data_t grid_data;
 static uint8_t ws_buffer[MAX_WS_BUFFER];
 static uint8_t binary_buffer[256];  // Buffer for binary protocol
 static ledc_channel_t node_to_channel[MAX_NODES] = {0};
+
+// Removed complex async queueing - use simple direct send
 
 static void init_pwm_outputs(void)
 {
@@ -93,7 +96,14 @@ static void init_pwm_outputs(void)
         ESP_ERROR_CHECK(ledc_channel_config(&channel_config));
     }
 
-    ESP_LOGI(POWER_GRID_TAG, "PWM outputs initialized on pins 14, 27, 26");
+    // Log all initialized pins dynamically
+    char pin_list[64] = "";
+    for (int i = 0; i < NUM_OUTPUT_PINS; i++) {
+        char pin_str[8];
+        snprintf(pin_str, sizeof(pin_str), "%s%d", (i > 0) ? ", " : "", output_pins[i].gpio_pin);
+        strcat(pin_list, pin_str);
+    }
+    ESP_LOGI(POWER_GRID_TAG, "PWM outputs initialized on pins %s", pin_list);
 }
 
 static void set_output_pwm(int node_id, float supply)
@@ -111,12 +121,19 @@ static void set_output_pwm(int node_id, float supply)
 
 static void init_dummy_nodes(void)
 {
-    grid_data.node_count = 3;  // Only the 3 nodes with LEDs
+    // Dynamically set node count based on output_pins array
+    grid_data.node_count = NUM_OUTPUT_PINS;
 
-    // All nodes with LEDs are consumers (nodes 1, 2, 3 have LEDs)
-    grid_data.nodes[0] = (power_node_t){1, "consumer", 2.5, 0.92};
-    grid_data.nodes[1] = (power_node_t){2, "consumer", 1.8, 0.88};
-    grid_data.nodes[2] = (power_node_t){3, "consumer", 3.2, 0.95};
+    // Initialize all nodes as consumers based on output_pins configuration
+    for (int i = 0; i < NUM_OUTPUT_PINS; i++) {
+        int node_id = output_pins[i].node_id;
+        grid_data.nodes[i] = (power_node_t){
+            .id = node_id,
+            .type = "consumer",
+            .demand = 2.0f + (i * 0.3f),  // Varying base demands: 2.0, 2.3, 2.6, 2.9...
+            .fulfillment = 0.88f + (i * 0.02f)  // Varying fulfillment: 88%, 90%, 92%, 94%...
+        };
+    }
 
     // Initialize node-to-channel mapping
     memset(node_to_channel, 0, sizeof(node_to_channel));
@@ -204,12 +221,12 @@ static void data_send_task(void *pvParameters)
                 httpd_ws_frame_t ws_frame = {
                     .final = true,
                     .fragmented = false,
-                    .type = HTTPD_WS_TYPE_BINARY,  // Binary instead of text
+                    .type = HTTPD_WS_TYPE_BINARY,
                     .payload = binary_buffer,
                     .len = binary_len
                 };
 
-                // Send to all connected /out clients
+                // Send to all connected /out clients - simple direct approach
                 int active_clients = 0;
                 for (int i = 0; i < MAX_OUT_CLIENTS; i++) {
                     if (ws_out_fds[i] >= 0) {
@@ -234,7 +251,7 @@ static void data_send_task(void *pvParameters)
 
                 // Log efficiency gain occasionally
                 static int log_counter = 0;
-                if (++log_counter % 240 == 0) {  // Log every 10 seconds at 24Hz
+                if (++log_counter % 100 == 0) {  // Log every 10 seconds at 10Hz
                     ESP_LOGI(POWER_GRID_TAG, "Binary telemetry: %d bytes to %d clients (vs ~150 JSON)", binary_len, active_clients);
                 }
             }
@@ -268,7 +285,7 @@ static esp_err_t power_grid_ws_out_handler(httpd_req_t *req)
 
         if (data_task == NULL) {
             xTaskCreate(data_send_task, "data_send", 4096, NULL, 5, &data_task);
-            ESP_LOGI(POWER_GRID_TAG, "Started data send task at 24 Hz");
+            ESP_LOGI(POWER_GRID_TAG, "Started data send task at 10 Hz");
         }
 
         return ESP_OK;
@@ -334,7 +351,7 @@ static esp_err_t power_grid_ws_in_handler(httpd_req_t *req)
 
                         // Log occasionally for debugging
                         static int log_counter = 0;
-                        if (++log_counter % 240 == 0) {  // Every 10 seconds
+                        if (++log_counter % 100 == 0) {  // Every 10 seconds
                             ESP_LOGI(POWER_GRID_TAG, "Binary dispatch: node %d gets %.3f supply from source %d",
                                     node->id, node->supply, node->source);
                         }
@@ -465,6 +482,11 @@ void app_main(void)
 
     ESP_LOGI(POWER_GRID_TAG, "Connecting to network...");
     ESP_ERROR_CHECK(example_connect());
+    
+    // Disable WiFi power save to improve stability
+    ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
+    ESP_LOGI(POWER_GRID_TAG, "WiFi power save disabled for stability");
+    
     ESP_LOGI(POWER_GRID_TAG, "Network connected");
 
     post_ip_address();
