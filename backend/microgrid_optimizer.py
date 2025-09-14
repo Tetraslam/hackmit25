@@ -19,7 +19,6 @@ from pulp import (PULP_CBC_CMD, LpMinimize, LpProblem, LpStatus,
                   LpStatusOptimal, LpVariable, lpSum, value)
 from scipy import fft
 
-# import logging
 
 # Configure logging for debugging
 # logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -475,5 +474,5 @@ def run_at_frequency(optimizer: MicrogridOptimizer,
         if elapsed < period:
             time.sleep(period - elapsed)
         else:
-            # logger.warning(f"Iteration {i} took {elapsed*1000:.1f}ms, exceeding {period*1000:.1f}ms period")
+            logger.warning(f"Iteration {i} took {elapsed*1000:.1f}ms, exceeding {period*1000:.1f}ms period")
             pass

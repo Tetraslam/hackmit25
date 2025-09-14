@@ -40,6 +40,7 @@ from rich.live import Live
 from rich.table import Table
 from rich.text import Text
 
+sys.path.insert(0, str(Path(__file__).parent.parent))
 from binary_protocol import (NODE_TYPE_CONSUMER, BinaryProtocol, DispatchNode,
                              DispatchPacket, TelemetryPacket)
 
@@ -382,6 +383,45 @@ async def process_hardware_telemetry(data: Dict[str, Any]):
                 # Send dispatch commands back to ESP32
                 await send_dispatch_to_hardware(dispatch_instructions)
                 
+                # Calculate economic metrics from real optimization data
+                total_cost = 0.0
+                total_supply = 0.0
+                source_usage = {}
+                green_energy_amps = 0.0
+                
+                # Calculate costs and source usage from dispatch instructions
+                for dispatch in dispatch_instructions:
+                    source_id = dispatch["source_id"]
+                    supply_amps = dispatch["supply_amps"]
+                    
+                    # Find the source to get cost information
+                    source = next((s for s in ENERGY_SOURCES if s.id == source_id), None)
+                    if source:
+                        cost = supply_amps * source.cost_per_amp
+                        total_cost += cost
+                        total_supply += supply_amps
+                        
+                        # Track source usage
+                        if source_id not in source_usage:
+                            source_usage[source_id] = {
+                                "amps": 0.0,
+                                "cost": 0.0,
+                                "cost_per_amp": source.cost_per_amp,
+                                "max_capacity": source.max_supply_amps
+                            }
+                        source_usage[source_id]["amps"] += supply_amps
+                        source_usage[source_id]["cost"] += cost
+                        
+                        # Track green energy (assuming renewable sources have lower costs)
+                        if source.cost_per_amp <= 0.10:  # Solar, wind, etc.
+                            green_energy_amps += supply_amps
+                
+                # Calculate total demand and unmet demand
+                total_demand = sum(r.demand_amps for r in records)
+                unmet_demand = max(0, total_demand - total_supply)
+                efficiency = (total_supply / max(total_demand, 0.1)) * 100 if total_demand > 0 else 100
+                green_percentage = (green_energy_amps / max(total_supply, 0.1)) * 100 if total_supply > 0 else 0
+                
                 # Update metrics for frontend
                 latest_metrics = {
                     "timestamp": int(timestamp * 1000),
@@ -398,12 +438,24 @@ async def process_hardware_telemetry(data: Dict[str, Any]):
                             "id": 999,  # Use a high ID for the power source to avoid conflicts
                             "type": "power", 
                             "demand": 0.0,
-                            "fulfillment": sum(d["supply_amps"] for d in dispatch_instructions)
+                            "fulfillment": total_supply
                         }
                     ],
                     "optimization_time_ms": opt_time,
                     "confidence_score": confidence,
-                    "dispatch_count": len(dispatch_instructions)
+                    "dispatch_count": len(dispatch_instructions),
+                    # Economic data from real optimization
+                    "economic": {
+                        "total_cost_per_second": total_cost,
+                        "cost_per_amp": total_cost / max(total_supply, 0.1) if total_supply > 0 else 0,
+                        "total_demand": total_demand,
+                        "total_supply": total_supply,
+                        "unmet_demand": unmet_demand,
+                        "efficiency_percent": efficiency,
+                        "green_energy_percent": green_percentage,
+                        "source_usage": source_usage,
+                        "dispatch_details": dispatch_instructions
+                    }
                 }
                 
                 # Broadcast to frontend clients
@@ -561,7 +613,18 @@ async def get_metrics():
             "nodes": [],
             "optimization_time_ms": 0,
             "confidence_score": 0.0,
-            "dispatch_count": 0
+            "dispatch_count": 0,
+            "economic": {
+                "total_cost_per_second": 0.0,
+                "cost_per_amp": 0.0,
+                "total_demand": 0.0,
+                "total_supply": 0.0,
+                "unmet_demand": 0.0,
+                "efficiency_percent": 100.0,
+                "green_energy_percent": 0.0,
+                "source_usage": {},
+                "dispatch_details": []
+            }
         }
     
     return latest_metrics
