@@ -440,13 +440,6 @@ async def process_hardware_telemetry(data: Dict[str, Any]):
                              "fulfillment": record.fulfillment
                          }
                          for record in records
-                     ] + [
-                         {
-                             "id": 999,  # Use a high ID for the power source to avoid conflicts
-                             "type": "power", 
-                             "demand": 0.0,
-                             "fulfillment": total_supply
-                         }
                      ],
                      "optimization_time_ms": opt_time,
                      "confidence_score": confidence,
@@ -694,6 +687,44 @@ async def get_confidence_history():
         "current": confidence_scores[-1] if confidence_scores else 0.0,
         "average": np.mean(confidence_scores) if confidence_scores else 0.0
     }
+
+@app.post("/consumers")
+async def add_consumer(consumer_data: dict):
+    """Add a new consumer node."""
+    try:
+        # For now, just simulate adding a consumer
+        # In a real implementation, this would add to the ESP32 simulation
+        consumer_id = consumer_data.get("id")
+        name = consumer_data.get("name", f"Consumer {consumer_id}")
+        demand = float(consumer_data.get("demand", 1.0))
+        
+        logger.info(f"Adding consumer: {name} (ID: {consumer_id}) with {demand}A demand")
+        
+        return {
+            "status": "success",
+            "message": f"Consumer {name} added successfully",
+            "consumer": {
+                "id": consumer_id,
+                "name": name,
+                "demand": demand,
+                "fulfillment": 0.0
+            }
+        }
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.delete("/consumers/{consumer_id}")
+async def remove_consumer(consumer_id: int):
+    """Remove a consumer node."""
+    try:
+        logger.info(f"Removing consumer with ID: {consumer_id}")
+        
+        return {
+            "status": "success",
+            "message": f"Consumer {consumer_id} removed successfully"
+        }
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 if __name__ == "__main__":
     import uvicorn

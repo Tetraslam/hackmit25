@@ -12,6 +12,7 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Activity, Zap, Brain, Clock, Wifi, AlertTriangle, DollarSign } from "lucide-react"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { EconomicInsights } from "@/components/economic-insights"
+import { DynamicNodesDisplay } from "@/components/dynamic-nodes-display"
 
 type NodeReading = {
   id: number
@@ -419,90 +420,19 @@ export default function MetricsPage() {
 
       {/* Detailed Node Status */}
       <div className="grid gap-6 lg:grid-cols-3">
-        {/* Node Table */}
-        <Card className="lg:col-span-2">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <Wifi className="h-5 w-5" />
-              Live Node Telemetry
-            </CardTitle>
-            <CardDescription>
-              {latest ? `Last update: ${new Date(latest.timestamp).toLocaleTimeString()}` : "Waiting for ESP32..."}
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            {latest?.nodes.length ? (
-              <div className="overflow-x-auto">
-                <Table>
-                  <Thead>
-                    <Tr>
-                      <Th>Node ID</Th>
-                      <Th>Type</Th>
-                      <Th className="text-right">Demand (A)</Th>
-                      <Th className="text-right">Fulfillment</Th>
-                      <Th>Status</Th>
-                    </Tr>
-                  </Thead>
-                  <Tbody>
-                    {latest.nodes.map((node, index) => {
-                      const efficiency = node.type === "consumer" 
-                        ? (node.fulfillment / Math.max(node.demand, 0.1)) * 100
-                        : node.fulfillment
-                      
-                      return (
-                        <Tr 
-                          key={node.id} 
-                          className={`
-                            transition-all duration-300 hover:bg-muted/50
-                            ${index % 2 === 0 ? 'bg-muted/20' : 'bg-background'}
-                            animate-pulse [animation-duration:2s]
-                          `}
-                        >
-                          <Td className="font-mono font-semibold">
-                            <div className="flex items-center gap-2">
-                              <div className="w-1.5 h-1.5 rounded-full bg-chart-2 animate-pulse" />
-                              {node.id}
-                            </div>
-                          </Td>
-                          <Td>
-                            <Badge variant={node.type === "consumer" ? "default" : "secondary"}>
-                              {node.type}
-                            </Badge>
-                          </Td>
-                          <Td className="text-right font-mono">
-                            <span className="transition-all duration-500">
-                              {node.demand.toFixed(3)}
-                            </span>
-                          </Td>
-                          <Td className="text-right font-mono">
-                            <span className="transition-all duration-500">
-                              {node.fulfillment.toFixed(3)}
-                            </span>
-                          </Td>
-                          <Td>
-                            <div className="flex items-center gap-2">
-                              <div className={`w-2 h-2 rounded-full transition-colors duration-500 ${
-                                efficiency > 90 ? 'bg-green-500' :
-                                efficiency > 70 ? 'bg-yellow-500' : 'bg-red-500'
-                              }`} />
-                              <span className="text-xs text-muted-foreground transition-all duration-500">
-                                {efficiency.toFixed(0)}%
-                              </span>
-                            </div>
-                          </Td>
-                        </Tr>
-                      )
-                    })}
-                  </Tbody>
-                </Table>
-              </div>
-            ) : (
-              <div className="text-center py-8 text-muted-foreground">
-                No telemetry data available
-              </div>
-            )}
-          </CardContent>
-        </Card>
+        {/* Dynamic Nodes Display */}
+        <div className="lg:col-span-2">
+          <DynamicNodesDisplay 
+            nodes={latest?.nodes || []}
+            onUpdateNodes={(updatedNodes) => {
+              // Update local state - in a real app this would sync with backend
+              if (latest) {
+                const updatedSnapshot = { ...latest, nodes: updatedNodes }
+                setHistory(h => [...h.slice(0, -1), updatedSnapshot])
+              }
+            }}
+          />
+        </div>
 
         {/* System Stats */}
         <Card>

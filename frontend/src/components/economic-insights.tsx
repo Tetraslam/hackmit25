@@ -36,7 +36,9 @@ type Snapshot = {
   confidence_score?: number
   dispatch_count?: number
   economic?: {
-    total_cost_per_second: number
+    total_cost: number  // Cumulative total cost
+    cycle_cost: number  // Cost for this optimization cycle
+    cost_per_second: number  // Cost per second rate
     cost_per_amp: number
     total_demand: number
     total_supply: number
@@ -95,7 +97,7 @@ export function EconomicInsights({ history, latest }: EconomicInsightsProps) {
           second: '2-digit' 
         }),
         timestamp: snapshot.timestamp,
-        totalCost: economic.total_cost_per_second,
+        totalCost: economic.total_cost,  // Use cumulative total cost
         costPerAmp: economic.cost_per_amp,
         demand: economic.total_demand,
         supply: economic.total_supply,
@@ -137,15 +139,15 @@ export function EconomicInsights({ history, latest }: EconomicInsightsProps) {
       <div className="grid gap-4 md:grid-cols-4">
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Current Cost Rate</CardTitle>
+            <CardTitle className="text-sm font-medium">Total Cost</CardTitle>
             <DollarSign className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">
-              ${(latest?.economic?.total_cost_per_second || 0).toFixed(4)}/s
+              ${(latest?.economic?.total_cost || 0).toFixed(4)}
             </div>
             <p className="text-xs text-muted-foreground">
-              ${(latest?.economic?.cost_per_amp || 0).toFixed(4)} per amp
+              ${(latest?.economic?.cost_per_second || 0).toFixed(4)}/s current rate
             </p>
           </CardContent>
         </Card>
@@ -245,7 +247,7 @@ export function EconomicInsights({ history, latest }: EconomicInsightsProps) {
                           <div className="bg-background border rounded-lg p-3 shadow-lg">
                             <p className="font-medium">{label}</p>
                             <p className="text-sm text-red-600">
-                              Cost: ${data.totalCost}/s
+                              Total Cost: ${data.totalCost}
                             </p>
                             <p className="text-sm text-blue-600">
                               Cost/Amp: ${data.costPerAmp}/A
@@ -365,7 +367,7 @@ export function EconomicInsights({ history, latest }: EconomicInsightsProps) {
               <div className="space-y-1">
                 <div className="flex justify-between">
                   <span className="text-sm">Total Cost:</span>
-                  <span className="text-sm font-mono">${(latest?.economic?.total_cost_per_second || 0).toFixed(4)}/s</span>
+                  <span className="text-sm font-mono">${(latest?.economic?.total_cost || 0).toFixed(4)}</span>
                 </div>
                 <div className="flex justify-between">
                   <span className="text-sm">Demand Met:</span>
